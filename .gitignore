@@ -1,0 +1,53 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+package-lock.json
+
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+package-lock.json
+
+# Local env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+package-lock.json
+
+# Testing
+coverage
+
+# Turbo
+.turbo
+
+# Vercel
+.vercel
+
+# Build Outputs
+.next/
+out/
+build
+dist
+server-build
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Misc
+.DS_Store
+*.pem
+
+# Service Account Keys
+*.json
+!package.json
+!tsconfig.json
+!turbo.json
+!biome.json
+
+# Files
+packages/supabase/src/types/db.ts

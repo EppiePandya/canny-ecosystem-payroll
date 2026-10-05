@@ -1,0 +1,31 @@
+{
+  "name": "@canny_ecosystem/utils",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "clean": "rm -rf .turbo node_modules",
+    "lint": "biome lint",
+    "format": "biome --write .",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./hooks/isomorphic-layout-effect": "./src/hooks/isomorphic-layout-effect.ts",
+    "./hooks/typing-animation": "./src/hooks/typing-animation.ts",
+    "./hooks/is-document": "./src/hooks/is-document.ts",
+    "./hooks/debounce": "./src/hooks/debounce.ts",
+    "./hooks/local-storage": "./src/hooks/local-storage.ts",
+    "./cache": "./src/cache.ts",
+    "./constant": "./constant.ts"
+  },
+  "dependencies": {
+    "@date-fns/utc": "^2.1.0",
+    "little-date": "^1.0.0",
+    "zod": "^3.23.8"
+  }
+}

@@ -1,0 +1,758 @@
+import { defaultYear, formatUTCDate } from "@canny_ecosystem/utils";
+import type {
+  EmployeeDatabaseRow,
+  EmployeeWorkDetailsDatabaseRow,
+  InferredType,
+  PayeeDatabaseRow,
+  ProjectDatabaseRow,
+  ReimbursementRow,
+  SiteDatabaseRow,
+  TypedSupabaseClient,
+  UserDatabaseRow,
+} from "../types";
+import { months } from "@canny_ecosystem/utils/constant";
+import { filterComparison } from "../constant";
+
+export type ImportReimbursementDataType = Pick<
+  ReimbursementRow,
+  "amount" | "status" | "submitted_date" | "user_id"
+> & {
+  employee_code: EmployeeDatabaseRow["employee_code"];
+} & { name: PayeeDatabaseRow["name"] };
+
+export type ReimbursementDataType = Pick<
+  ReimbursementRow,
+  | "id"
+  | "employee_id"
+  | "note"
+  | "status"
+  | "type"
+  | "payee_id"
+  | "amount"
+  | "submitted_date"
+  | "user_id"
+  | "invoice_id"
+  | "company_id"
+  | "user_id"
+> & {
+  employees: Pick<
+    EmployeeDatabaseRow,
+    "first_name" | "middle_name" | "last_name" | "employee_code"
+  > & {
+    work_details: Pick<EmployeeWorkDetailsDatabaseRow, "employee_id"> & {
+      sites: {
+        id: SiteDatabaseRow["id"];
+        name: SiteDatabaseRow["name"];
+        projects: {
+          id: ProjectDatabaseRow["id"];
+          name: ProjectDatabaseRow["name"];
+        };
+      };
+    };
+  };
+} & {
+  users: Pick<UserDatabaseRow, "id" | "email">;
+} & {
+  payee: Pick<PayeeDatabaseRow, "id" | "name">;
+} & {
+  invoice: {
+    id: string;
+    invoice_number: string | null;
+  } | null;
+};
+
+export type ImportReimbursementPayrollDataType = Pick<
+  ReimbursementRow,
+  | "employee_id"
+  | "amount"
+  | "id"
+  | "invoice_id"
+  | "company_id"
+  | "type"
+  | "note"
+> & {
+  employee_code: EmployeeDatabaseRow["employee_code"];
+};
+
+export type ReimbursementPayrollEntriesWithEmployee = Omit<
+  ImportReimbursementPayrollDataType,
+  "created_at"
+> & {
+  employees: Pick<
+    EmployeeDatabaseRow,
+    "first_name" | "middle_name" | "last_name" | "employee_code" | "id"
+  >;
+};
+
+export async function getReimbursementsByCompanyId({
+  supabase,
+  companyId,
+  params,
+}: {
+  supabase: TypedSupabaseClient;
+  companyId: string;
+  params: {
+    from: number;
+    to: number;
+    sort?: [string, "asc" | "desc"];
+    searchQuery?: string;
+    filters?: ReimbursementFilters | null;
+  };
+}) {
+  const { from, to, sort, searchQuery, filters } = params;
+
+  const {
+    submitted_date_start,
+    submitted_date_end,
+    status,
+    users,
+    type,
+    project,
+    site,
+    payee,
+    in_invoice,
+    month,
+    year,
+    recently_added,
+    reimbursement_for,
+  } = filters ?? {};
+
+  const foreignFilters = searchQuery || project || site;
+
+  const columns = [
+    "id",
+    "status",
+    "amount",
+    "note",
+    "type",
+    "submitted_date",
+    "employee_id",
+    "payee_id",
+    "invoice_id",
+    "company_id",
+  ] as const;
+
+  const query = supabase
+    .from("reimbursements")
+    .select(
+      `${columns.join(",")},
+        employees!${foreignFilters ? "inner" : "left"
+      }(first_name, middle_name, last_name, employee_code, work_details!work_details_employee_id_fkey!${foreignFilters ? "inner" : "left"
+      }(sites!${foreignFilters ? "inner" : "left"}(id, name), departments!left(id, name), department:departments!left(id, name), projects!${project ? "inner" : "left"
+      }(id, name))),
+        payee!${payee ? "inner" : "left"}(id, name),
+        users!${users ? "inner" : "left"}(id,email),
+        invoice(id, invoice_number)`,
+      { count: "exact" },
+    )
+    .eq("company_id", companyId);
+
+  if (reimbursement_for === "employee") {
+    query.not("employee_id", "is", null);
+  } else if (reimbursement_for === "payee") {
+    query.not("payee_id", "is", null).not("type", "ilike", "vehicle%");
+  } else if (reimbursement_for === "vehicle") {
+    query.or("type.eq.vehicle,type.eq.vehicle_related");
+  }
+
+  if (sort) {
+    const [column, direction] = sort;
+    const reimbursementCols = [
+      "note",
+      "status",
+      "type",
+      "amount",
+      "submitted_date",
+    ];
+
+    if (reimbursementCols.includes(column)) {
+      query.order(column, { ascending: direction === "asc" });
+    } else {
+      query.order("created_at", { ascending: false });
+    }
+  } else {
+    query.order("created_at", { ascending: false });
+  }
+
+  if (searchQuery) {
+    const searchQueryArray = searchQuery.split(" ");
+    if (searchQueryArray.length > 0 && searchQueryArray.length <= 3) {
+      for (const part of searchQueryArray) {
+        query.or(
+          `first_name.ilike.*${part}*,middle_name.ilike.*${part}*,last_name.ilike.*${part}*,employee_code.ilike.*${part}*`,
+          { referencedTable: "employees" },
+        );
+      }
+    } else {
+      query.or(
+        `first_name.ilike.*${searchQuery}*,middle_name.ilike.*${searchQuery}*,last_name.ilike.*${searchQuery}*,employee_code.ilike.*${searchQuery}*`,
+        { referencedTable: "employees" },
+      );
+    }
+  }
+
+  const finalStartDate = () => {
+    if (month && year) {
+      return new Date(Date.UTC(Number(year), Number(months[month]) - 1, 1));
+    }
+    if (month) {
+      return new Date(
+        Date.UTC(Number(defaultYear), Number(months[month]) - 1, 1),
+      );
+    }
+    if (year) {
+      return new Date(Date.UTC(Number(year), 0, 1));
+    }
+    if (submitted_date_start) return new Date(submitted_date_start);
+  };
+
+  const finalEndDate = () => {
+    if (month && year) {
+      return new Date(Number(year), Number(months[month]), 1);
+    }
+    if (month) {
+      return new Date(Number(defaultYear), Number(months[month]), 1);
+    }
+    if (year) {
+      return new Date(Number(year), 12, 1);
+    }
+    if (submitted_date_end) return new Date(submitted_date_end);
+  };
+
+  const dateFilters = [
+    {
+      field: "submitted_date",
+      start: finalStartDate()?.toUTCString(),
+      end: finalEndDate()?.toUTCString(),
+    },
+  ];
+
+  for (const { field, start, end } of dateFilters) {
+    if (start) query.gte(field, start);
+    if (end) query.lte(field, end);
+  }
+
+  if (recently_added) {
+    const now = new Date();
+    const diff =
+      filterComparison[recently_added as keyof typeof filterComparison];
+    if (diff) {
+      const startTime = new Date(now.getTime() - diff).toISOString();
+      query.gte("created_at", startTime);
+    }
+  }
+
+  if (payee) query.eq("payee.name", payee);
+  if (status) query.eq("status", status.toLowerCase());
+  if (users) query.eq("users.email", users);
+  if (type) query.eq("type", type);
+  if (project) query.eq("employees.work_details.projects.name", project);
+  if (site) query.eq("employees.work_details.sites.name", site);
+  if (in_invoice !== undefined && in_invoice !== null) {
+    if (in_invoice === "true") query.not("invoice_id", "is", null);
+    else query.is("invoice_id", null);
+  }
+
+  const { data, count, error } = await query.range(from, to);
+  if (error) {
+    console.error("getReimbursementsByCompanyId Error", error);
+  }
+
+  const uniqueMap = new Map<string, any>();
+  for (const item of data || []) {
+    if (!uniqueMap.has(item.id)) {
+      uniqueMap.set(item.id, item);
+    }
+  }
+
+  return { data: Array.from(uniqueMap.values()), meta: { count }, error };
+}
+
+export async function getReimbursementsById({
+  supabase,
+  reimbursementId,
+}: {
+  supabase: TypedSupabaseClient;
+  reimbursementId: string;
+}) {
+  const columns = [
+    "id",
+    "employee_id",
+    "note",
+    "status",
+    "amount",
+    "type",
+    "payee_id",
+    "submitted_date",
+    "user_id",
+    "invoice_id",
+    "company_id",
+  ] as const;
+
+  const { data, error } = await supabase
+    .from("reimbursements")
+    .select(columns.join(","))
+    .eq("id", reimbursementId)
+    .single<InferredType<ReimbursementRow, (typeof columns)[number]>>();
+
+  if (error) {
+    console.error("getReimbursementsById Error", error);
+  }
+
+  return { data, error };
+}
+
+export type ReimbursementFilters = {
+  submitted_date_start?: string | undefined | null;
+  submitted_date_end?: string | undefined | null;
+  status?: string | undefined | null;
+  users?: string | undefined | null;
+  project?: string | undefined | null;
+  name?: string | undefined | null;
+  site?: string | undefined | null;
+  payee?: string | undefined | null;
+  type?: string | undefined | null;
+  in_invoice?: string | undefined | null;
+  month?: string | undefined | null;
+  year?: string | undefined | null;
+  recently_added?: string | undefined | null;
+  reimbursement_for?: string | undefined | null;
+};
+
+export async function getReimbursementsByEmployeeId({
+  supabase,
+  employeeId,
+  params,
+}: {
+  supabase: TypedSupabaseClient;
+  employeeId: string;
+  params: {
+    from: number;
+    to: number;
+    sort?: [string, "asc" | "desc"];
+    searchQuery?: string;
+    filters?: ReimbursementFilters | null;
+  };
+}) {
+  const { from, to, sort, filters } = params;
+
+  const { submitted_date_start, submitted_date_end, status, users, type } =
+    filters ?? {};
+
+  const columns = [
+    "id",
+    "employee_id",
+    "note",
+    "status",
+    "type",
+    "amount",
+    "submitted_date",
+    "payee_id",
+    "invoice_id",
+    "company_id",
+  ] as const;
+
+  let query = supabase
+    .from("reimbursements")
+    .select(
+      `${columns.join(",")},
+          employees!inner(id, first_name, middle_name, last_name, employee_code, work_details!work_details_employee_id_fkey!left(sites!left(id, name), projects!left(id, name))),
+          users!${users ? "inner" : "left"}(id,email),
+          invoice(id, invoice_number)`,
+      { count: "exact" },
+    )
+    .eq("employee_id", employeeId);
+
+  if (sort) {
+    const [column, direction] = sort;
+
+    const reimbursementCols = [
+      "note",
+      "status",
+      "type",
+      "amount",
+      "submitted_date",
+    ];
+
+    if (reimbursementCols.includes(column)) {
+      query = query.order(column, { ascending: direction === "asc" });
+    } else {
+      query = query.order("created_at", { ascending: false });
+    }
+  } else {
+    query = query.order("created_at", { ascending: false });
+  }
+
+  if (filters) {
+    const dateFilters = [
+      {
+        field: "submitted_date",
+        start: submitted_date_start,
+        end: submitted_date_end,
+      },
+    ];
+    for (const { field, start, end } of dateFilters) {
+      if (start) query.gte(field, formatUTCDate(start));
+      if (end) query.lte(field, formatUTCDate(end));
+    }
+    if (status) {
+      query.eq("status", status.toLowerCase());
+    }
+    if (type) {
+      query.eq("type", type);
+    }
+    if (users) {
+      query.eq("users.email", users);
+    }
+  }
+
+  const { data, count, error } = await query.range(from, to);
+
+  if (error) {
+    console.error("getReimbursementsByEmployeeId Error", error);
+  }
+
+  return { data, meta: { count: count }, error };
+}
+
+export type RecentReimbursementType = Pick<
+  ReimbursementRow,
+  | "id"
+  | "amount"
+  | "status"
+  | "submitted_date"
+  | "company_id"
+  | "note"
+  | "type"
+  | "payee_id"
+> & {
+  employees: Pick<
+    EmployeeDatabaseRow,
+    "id" | "first_name" | "middle_name" | "last_name" | "employee_code"
+  > & {};
+};
+
+export async function getReimbursementEntriesForPayrollByPayrollId({
+  supabase,
+  payrollId,
+}: {
+  supabase: TypedSupabaseClient;
+  payrollId: string;
+}) {
+  const columns = [
+    "id",
+    "employee_id",
+    "payee_id",
+    "note",
+    "amount",
+    "type",
+    "invoice_id",
+    "created_at",
+    "company_id",
+  ] as const;
+
+  const { data, error } = await supabase
+    .from("reimbursements")
+    .select(
+      `${columns.join(
+        ",",
+      )}, employees!left(id, first_name, middle_name, last_name, employee_code)`,
+    )
+    .eq("payroll_id", payrollId)
+    .order("created_at", { ascending: false })
+    .returns<ReimbursementPayrollEntriesWithEmployee[]>();
+
+  if (error)
+    console.error("getReimbursementEntriesForPayrollByPayrollId Error", error);
+
+  return { data, error };
+}
+
+export async function getReimbursementEntryForPayrollById({
+  supabase,
+  id,
+}: {
+  supabase: TypedSupabaseClient;
+  id: string;
+}) {
+  const columns = [
+    "id",
+    "employee_id",
+    "note",
+    "type",
+    "amount",
+    "invoice_id",
+    "payee_id",
+    "company_id",
+  ] as const;
+
+  const { data, error } = await supabase
+    .from("reimbursements")
+    .select(
+      `${columns.join(
+        ",",
+      )}, employees!left(id,first_name, middle_name, last_name, employee_code)`,
+    )
+    .eq("id", id)
+    .single<ReimbursementPayrollEntriesWithEmployee>();
+
+  if (error) console.error("getReimbursementforPayrollEntryById Error", error);
+
+  return { data, error };
+}
+
+export async function getReimbursementEntriesByInvoiceIdForInvoicePreview({
+  supabase,
+  invoiceId,
+}: {
+  supabase: TypedSupabaseClient;
+  invoiceId: string;
+}) {
+  const columns = ["amount"] as const;
+
+  const { data: employeeData, error: employeeError } = await supabase
+    .from("employees")
+    .select(
+      `id, company_id, first_name, middle_name, last_name, employee_code, work_details!work_details_employee_id_fkey!left(
+          end_date,
+          position,
+          start_date
+        ),reimbursements!inner(${columns.join(",")})`,
+    )
+    .eq("reimbursements.invoice_id", invoiceId);
+
+  if (employeeError) {
+    console.error("getReimbursementEntries employeeError", employeeError);
+    return { data: null, error: employeeError };
+  }
+
+  const { data: payeeData, error: payeeError } = await supabase
+    .from("payee")
+    .select(`id, company_id, name, reimbursements!inner(${columns.join(",")})`)
+    .eq("reimbursements.invoice_id", invoiceId);
+
+  if (payeeError) {
+    console.error("getReimbursementEntries payeeError", payeeError);
+    return { data: null, error: payeeError };
+  }
+
+  const normalizedPayees = ((payeeData as any) ?? []).map((p: any) => ({
+    id: p.id,
+    company_id: p.company_id,
+    first_name: p.name,
+    middle_name: null,
+    last_name: null,
+    employee_code: null,
+    reimbursements: p.reimbursements,
+  }));
+
+  // Merge both sets
+  const data = [...(employeeData ?? []), ...normalizedPayees];
+
+  return { data, error: null };
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+export async function getReimbursementsBySiteIds({
+  supabase,
+  siteIds,
+  params,
+}: {
+  supabase: TypedSupabaseClient;
+  siteIds: string[];
+  params: {
+    from: number;
+    to: number;
+    sort?: [string, "asc" | "desc"];
+    searchQuery?: string;
+    filters?: ReimbursementFilters | null;
+  };
+}) {
+  const { from, to, sort, searchQuery, filters } = params;
+
+  const {
+    submitted_date_start,
+    submitted_date_end,
+    status,
+    users,
+    type,
+    project,
+    site,
+    in_invoice,
+    month,
+    year,
+  } = filters ?? {};
+
+  const columns = [
+    "id",
+    "status",
+    "amount",
+    "note",
+    "type",
+    "submitted_date",
+    "employee_id",
+    "payee_id",
+    "invoice_id",
+    "company_id",
+  ] as const;
+
+  const query = supabase.from("reimbursements").select(
+    `${columns.join(",")},
+        employees!inner(first_name, middle_name, last_name, employee_code, work_details!work_details_employee_id_fkey!inner
+        (sites!inner(id, name), projects!${project ? "inner" : "left"}(id, name))),
+        payee!left(id, name),
+        users!${users ? "inner" : "left"}(id,email),
+        invoice(id, invoice_number)`,
+    { count: "exact" },
+  );
+
+  if (sort) {
+    const [column, direction] = sort;
+    const reimbursementCols = [
+      "note",
+      "status",
+      "type",
+      "amount",
+      "submitted_date",
+    ];
+
+    if (reimbursementCols.includes(column)) {
+      query.order(column, { ascending: direction === "asc" });
+    } else {
+      query.order("created_at", { ascending: false });
+    }
+  } else {
+    query.order("created_at", { ascending: false });
+  }
+
+  if (searchQuery) {
+    const searchQueryArray = searchQuery.split(" ");
+    if (searchQueryArray.length > 0 && searchQueryArray.length <= 3) {
+      for (const part of searchQueryArray) {
+        query.or(
+          `first_name.ilike.*${part}*,middle_name.ilike.*${part}*,last_name.ilike.*${part}*,employee_code.ilike.*${part}*`,
+          { referencedTable: "employees" },
+        );
+      }
+    } else {
+      query.or(
+        `first_name.ilike.*${searchQuery}*,middle_name.ilike.*${searchQuery}*,last_name.ilike.*${searchQuery}*,employee_code.ilike.*${searchQuery}*`,
+        { referencedTable: "employees" },
+      );
+    }
+  }
+
+  const finalStartDate = () => {
+    if (month && year) {
+      return new Date(Date.UTC(Number(year), Number(months[month]) - 1, 1));
+    }
+    if (month) {
+      return new Date(
+        Date.UTC(Number(defaultYear), Number(months[month]) - 1, 1),
+      );
+    }
+    if (year) {
+      return new Date(Date.UTC(Number(year), 0, 1));
+    }
+    if (submitted_date_start) return new Date(submitted_date_start);
+  };
+
+  const finalEndDate = () => {
+    if (month && year) {
+      return new Date(Number(year), Number(months[month]), 1);
+    }
+    if (month) {
+      return new Date(Number(defaultYear), Number(months[month]), 1);
+    }
+    if (year) {
+      return new Date(Number(year), 12, 1);
+    }
+    if (submitted_date_end) return new Date(submitted_date_end);
+  };
+
+  const dateFilters = [
+    {
+      field: "submitted_date",
+      start: finalStartDate()?.toUTCString(),
+      end: finalEndDate()?.toUTCString(),
+    },
+  ];
+
+  for (const { field, start, end } of dateFilters) {
+    if (start) query.gte(field, start);
+    if (end) query.lte(field, end);
+  }
+
+  if (status) query.eq("status", status.toLowerCase());
+  if (users) query.eq("users.email", users);
+  if (type) query.eq("type", type);
+  if (project) query.eq("employees.work_details.projects.name", project);
+  if (site) query.eq("employees.work_details.sites.name", site);
+  if (in_invoice !== undefined && in_invoice !== null) {
+    if (in_invoice === "true") query.not("invoice_id", "is", null);
+    else query.is("invoice_id", null);
+  }
+
+  query.in("employees.work_details.sites.id", siteIds);
+
+  const { data, count, error } = await query.range(from, to);
+  if (error) {
+    console.error("getReimbursementsBySiteIds Error", error);
+  }
+
+  const uniqueMap = new Map<string, any>();
+  for (const item of data || []) {
+    if (!uniqueMap.has(item.id)) {
+      uniqueMap.set(item.id, item);
+    }
+  }
+
+  return { data: Array.from(uniqueMap.values()), meta: { count }, error };
+}
+
+export async function getReimbursementsByVehicleId({
+  supabase,
+  vehicleId,
+}: {
+  supabase: TypedSupabaseClient;
+  vehicleId: string;
+}) {
+  const columns = [
+    "id",
+    "status",
+    "amount",
+    "note",
+    "type",
+    "submitted_date",
+    "employee_id",
+    "payee_id",
+    "invoice_id",
+    "company_id",
+  ] as const;
+
+  const { data, error } = await supabase
+    .from("reimbursement_vehicles")
+    .select(`
+      reimbursements!inner(
+        ${columns.join(",")},
+        employees(id, first_name, middle_name, last_name, employee_code),
+        payee(id, name),
+        users(id, email),
+        invoice(id, invoice_number)
+      )
+    `)
+    .eq("vehicle_id", vehicleId);
+
+  if (error) {
+    console.error("getReimbursementsByVehicleId Error:", error);
+    return { data: [], error };
+  }
+
+  const reimbursements = (data || [])
+    .map((item: any) => item.reimbursements)
+    .filter(Boolean);
+
+  return { data: reimbursements, error: null };
+}
+

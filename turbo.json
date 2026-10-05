@@ -1,0 +1,48 @@
+{
+  "$schema": "https://turborepo.org/schema.json",
+  "globalDependencies": ["**/.env"],
+  "ui": "stream",
+  "tasks": {
+    "build": {
+      "env": [
+        "SUPABASE_DATABASE_URL",
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "OPENAI_KEY",
+        "SESSION_SECRET",
+        "POSTGRES_URL",
+        "POSTGRES_PRISMA_URL",
+        "POSTGRES_URL_NON_POOLING",
+        "POSTGRES_USER",
+        "POSTGRES_HOST",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_JWT_SECRET",
+        "RESEND_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "OPENAI_API_KEY"
+      ],
+      "inputs": [".env"],
+      "dependsOn": ["^build"],
+      "outputs": ["build/**"]
+    },
+    "build:icons": {
+      "outputs": []
+    },
+    "db:generate": {
+      "outputs": []
+    },
+    "start": {
+      "cache": false
+    },
+    "lint": {
+      "outputs": []
+    },
+    "dev": {
+      "inputs": [".env"],
+      "persistent": true,
+      "cache": false
+    }
+  }
+}

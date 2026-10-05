@@ -1,0 +1,41 @@
+{
+  "name": "@canny_ecosystem/supabase",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "clean": "rm -rf .turbo node_modules",
+    "lint": "biome lint",
+    "format": "biome format --write .",
+    "typecheck": "tsc --noEmit",
+    "seed": "tsx src/seed/index.ts",
+    "db:generate": "set USERPROFILE=%USERPROFILE% && set HOME=%USERPROFILE% && supabase gen types --lang=typescript --project-id oghojvhpbxanipiuxwbu --schema public > src/types/db.ts"
+  },
+  "dependencies": {
+    "@canny_ecosystem/utils": "*",
+    "@canny_ecosystem/types": "*",
+    "@supabase/ssr": "^0.8.0",
+    "dotenv": "^17.2.3",
+    "react": "^18.3.1",
+    "supabase": "^2.76.9"
+  },
+  "devDependencies": {
+    "@faker-js/faker": "^9.0.3",
+    "@supabase/supabase-js": "^2.45.4",
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.4"
+  },
+  "exports": {
+    "./server": "./src/clients/server.ts",
+    "./client": "./src/clients/client.ts",
+    "./queries": "./src/queries/index.ts",
+    "./queries/salary-import": "./src/queries/salary-import.ts",
+    "./media": "./src/media/index.ts",
+    "./cached-queries": "./src/queries/cached-queries.ts",
+    "./mutations": "./src/mutations/index.ts",
+    "./types": "./src/types/index.ts",
+    "./constant": "./src/constant.ts",
+    "./seed": "./src/seed/seed-requisites.ts",
+    "./letter": "./src/types/letter.ts"
+  }
+}

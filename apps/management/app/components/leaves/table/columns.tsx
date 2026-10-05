@@ -1,0 +1,179 @@
+import {
+  deleteRole,
+  formatDate,
+  hasPermission,
+  replaceUnderscore,
+  updateRole,
+} from "@canny_ecosystem/utils";
+import { Button } from "@canny_ecosystem/ui/button";
+import { Checkbox } from "@canny_ecosystem/ui/checkbox";
+import { DropdownMenuTrigger } from "@canny_ecosystem/ui/dropdown-menu";
+import { Icon } from "@canny_ecosystem/ui/icon";
+
+import type { ColumnDef } from "@tanstack/react-table";
+import type { LeavesDataType } from "@canny_ecosystem/supabase/queries";
+import { cn } from "@canny_ecosystem/ui/utils/cn";
+import { useUser } from "@/utils/user";
+import { attribute } from "@canny_ecosystem/utils/constant";
+import { LeavesOptionsDropdown } from "@/components/employees/leaves/table/leaves-table-options";
+import { Link } from "@remix-run/react";
+
+export const columns = (
+  isEmployeeRoute?: boolean,
+): ColumnDef<LeavesDataType>[] => [
+  {
+    id: "select",
+    cell: ({ row }) => (
+      <Checkbox
+        checked={row.getIsSelected()}
+        onCheckedChange={(value) => row.toggleSelected(!!value)}
+      />
+    ),
+    enableSorting: false,
+    enableHiding: false,
+  },
+  {
+    enableSorting: false,
+    accessorKey: "employee_code",
+    header: "Employee Code",
+    cell: ({ row }) => (
+      <Link
+        to={`/employees/${row.original.employee_id}/leaves`}
+        prefetch="intent"
+        className={cn("group", isEmployeeRoute && "cursor-default")}
+      >
+        <p
+          className={cn("truncate w-28", !isEmployeeRoute && "text-primary/80")}
+        >
+          {row.original?.employees?.employee_code}
+        </p>
+      </Link>
+    ),
+  },
+  {
+    accessorKey: "employee_name",
+    header: "Employee Name",
+    cell: ({ row }) => (
+      <Link
+        to={`/employees/${row.original.employee_id}/leaves`}
+        prefetch="intent"
+        className={cn("group", isEmployeeRoute && "cursor-default")}
+      >
+        <p
+          className={cn("truncate w-52", !isEmployeeRoute && "text-primary/80")}
+        >{`${row.original?.employees?.first_name} ${
+          row.original?.employees?.middle_name ?? ""
+        } ${row.original?.employees?.last_name ?? ""}`}</p>
+      </Link>
+    ),
+  },
+  {
+    accessorKey: "project",
+    header: "Project",
+    cell: ({ row }) => {
+      const workDetail = Array.isArray(row.original?.employees?.work_details)
+        ? row.original?.employees?.work_details[0]
+        : row.original?.employees?.work_details;
+      return workDetail?.projects?.name ?? "--";
+    },
+  },
+  {
+    accessorKey: "site",
+    header: "Site",
+    cell: ({ row }) => {
+      const workDetail = Array.isArray(row.original?.employees?.work_details)
+        ? row.original?.employees?.work_details[0]
+        : row.original?.employees?.work_details;
+      return workDetail?.sites?.name ?? "--";
+    },
+  },
+  {
+    accessorKey: "leave_type",
+    header: "Leave Type",
+    cell: ({ row }) => {
+      return (
+        <p className="w-max">
+          {replaceUnderscore(row.original?.leave_type) ?? "--"}
+        </p>
+      );
+    },
+  },
+  {
+    accessorKey: "start_date",
+    header: "Start Date",
+    cell: ({ row }) => {
+      return (
+        <p className="w-max">
+          {(formatDate(row.original?.start_date) as any) ?? "--"}
+        </p>
+      );
+    },
+  },
+  {
+    accessorKey: "end_date",
+    header: "End Date",
+    cell: ({ row }) => {
+      return (
+        <p className="w-max">
+          {(formatDate(row.original?.end_date) as any) ?? "--"}
+        </p>
+      );
+    },
+  },
+  {
+    accessorKey: "reason",
+    header: "Reason",
+    cell: ({ row }) => {
+      return (
+        <p className="w-96 truncate capitalize">
+          {row.original?.reason ?? "--"}
+        </p>
+      );
+    },
+  },
+  {
+    accessorKey: "email",
+    header: "Approved By",
+    cell: ({ row }) => {
+      return <p className="truncate">{row.original?.users?.email ?? "--"}</p>;
+    },
+  },
+
+  {
+    id: "actions",
+    enableSorting: false,
+    enableHiding: false,
+    cell: ({ row }) => {
+      const { role } = useUser();
+      return (
+        <LeavesOptionsDropdown
+          key={row.original.id}
+          leavesId={row.original.id}
+          employeeId={row.original.employee_id}
+          isEmployeeRoute={isEmployeeRoute}
+          triggerChild={
+            <DropdownMenuTrigger
+              asChild
+              className={cn(
+                !hasPermission(
+                  role,
+                  `${updateRole}:${attribute.employeeLeaves}`,
+                ) &&
+                  !hasPermission(
+                    role,
+                    `${deleteRole}:${attribute.employeeLeaves}`,
+                  ) &&
+                  "hidden",
+              )}
+            >
+              <Button variant="ghost" className="h-8 w-8 p-0">
+                <span className="sr-only">Open menu</span>
+                <Icon name="dots-vertical" />
+              </Button>
+            </DropdownMenuTrigger>
+          }
+        />
+      );
+    },
+  },
+];

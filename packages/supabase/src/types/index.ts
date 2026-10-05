@@ -1,0 +1,537 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "./db";
+
+export * from "./db";
+
+export type Keys<T> = keyof T;
+export type InferredType<T, K extends Keys<T>> = Pick<T, K>;
+
+export type TypedSupabaseClient = SupabaseClient<Database>;
+
+export type SupabaseEnv = {
+  SUPABASE_URL: string;
+  SUPABASE_ANON_KEY: string;
+};
+
+// Users
+export type UserDatabaseRow = Database["public"]["Tables"]["users"]["Row"];
+export type UserDatabaseInsert =
+  Database["public"]["Tables"]["users"]["Insert"];
+export type UserDatabaseUpdate =
+  Database["public"]["Tables"]["users"]["Update"];
+
+// Audit Logs
+export type AuditLogDatabaseRow =
+  Database["public"]["Tables"]["audit_logs"]["Row"];
+export type AuditLogDatabaseInsert =
+  Database["public"]["Tables"]["audit_logs"]["Insert"];
+export type AuditLogDatabaseUpdate =
+  Database["public"]["Tables"]["audit_logs"]["Update"];
+
+// Companies
+export type CompaniesDatabaseRow = {
+  id: Database["public"]["Tables"]["companies"]["Row"]["id"];
+  name: Database["public"]["Tables"]["companies"]["Row"]["name"];
+}[];
+
+export type CompanyDatabaseRow =
+  Database["public"]["Tables"]["companies"]["Row"];
+export type CompanyDatabaseInsert =
+  Database["public"]["Tables"]["companies"]["Insert"];
+export type CompanyDatabaseUpdate =
+  Database["public"]["Tables"]["companies"]["Update"];
+
+// Company Config
+export type CompanyConfigDatabaseRow =
+  Database["public"]["Tables"]["companies_config"]["Row"];
+export type CompanyConfigDatabaseInsert =
+  Database["public"]["Tables"]["companies_config"]["Insert"];
+export type CompanyConfigDatabaseUpdate =
+  Database["public"]["Tables"]["companies_config"]["Update"];
+
+// Company Locations
+export type LocationDatabaseRow =
+  Database["public"]["Tables"]["company_locations"]["Row"];
+export type LocationDatabaseInsert =
+  Database["public"]["Tables"]["company_locations"]["Insert"];
+export type LocationDatabaseUpdate =
+  Database["public"]["Tables"]["company_locations"]["Update"];
+
+// Company Relationships
+export type RelationshipDatabaseRow =
+  Database["public"]["Tables"]["company_relationships"]["Row"];
+export type RelationshipDatabaseInsert =
+  Database["public"]["Tables"]["company_relationships"]["Insert"];
+export type RelationshipDatabaseUpdate =
+  Database["public"]["Tables"]["company_relationships"]["Update"];
+
+// Company Documents
+export type DocumentsDatabaseRow =
+  Database["public"]["Tables"]["company_documents"]["Row"];
+export type DocumentsDatabaseInsert =
+  Database["public"]["Tables"]["company_documents"]["Insert"];
+export type DocumentDatabaseUpdate =
+  Database["public"]["Tables"]["company_documents"]["Update"];
+
+// Company ESIC Details
+export type CompanyEsicDetailsDatabaseRow =
+  Database["public"]["Tables"]["company_esic_details"]["Row"];
+export type CompanyEsicDetailsDatabaseInsert =
+  Database["public"]["Tables"]["company_esic_details"]["Insert"];
+export type CompanyEsicDetailsDatabaseUpdate =
+  Database["public"]["Tables"]["company_esic_details"]["Update"];
+
+// Projects
+export type ProjectDatabaseRow =
+  Database["public"]["Tables"]["projects"]["Row"];
+export type ProjectDatabaseInsert =
+  Database["public"]["Tables"]["projects"]["Insert"];
+export type ProjectDatabaseUpdate =
+  Database["public"]["Tables"]["projects"]["Update"];
+
+// Sites
+export type SiteDatabaseRow = Database["public"]["Tables"]["sites"]["Row"];
+export type SiteDatabaseInsert =
+  Database["public"]["Tables"]["sites"]["Insert"];
+export type SiteDatabaseUpdate =
+  Database["public"]["Tables"]["sites"]["Update"];
+
+// Site Letters
+export type LetterDatabaseRow = Database["public"]["Tables"]["letter"]["Row"];
+export type LetterDatabaseInsert =
+  Database["public"]["Tables"]["letter"]["Insert"];
+export type LetterDatabaseUpdate =
+  Database["public"]["Tables"]["letter"]["Update"];
+
+// Pay Sequences
+export type PaySequenceDatabaseRow =
+  Database["public"]["Tables"]["pay_sequence"]["Row"];
+export type PaySequenceDatabaseInsert =
+  Database["public"]["Tables"]["pay_sequence"]["Insert"];
+export type PaySequenceDatabaseUpdate =
+  Database["public"]["Tables"]["pay_sequence"]["Update"];
+
+// Employees
+export type EmployeeDatabaseRow =
+  Database["public"]["Tables"]["employees"]["Row"];
+export type EmployeeDatabaseInsert =
+  Database["public"]["Tables"]["employees"]["Insert"];
+export type EmployeeDatabaseUpdate =
+  Database["public"]["Tables"]["employees"]["Update"];
+
+// Employee Attendance
+export type EmployeeDailyAttendanceDatabaseRow =
+  Database["public"]["Tables"]["daily_attendance"]["Row"];
+export type EmployeeDailyAttendanceDatabaseInsert =
+  Database["public"]["Tables"]["daily_attendance"]["Insert"];
+export type EmployeeDailyAttendanceDatabaseUpdate =
+  Database["public"]["Tables"]["daily_attendance"]["Update"];
+
+// Employee Attendance
+export type EmployeeMonthlyAttendanceDatabaseRow =
+  Database["public"]["Tables"]["monthly_attendance"]["Row"];
+export type EmployeeMonthlyAttendanceDatabaseInsert =
+  Database["public"]["Tables"]["monthly_attendance"]["Insert"];
+export type EmployeeMonthlyAttendanceDatabaseUpdate =
+  Database["public"]["Tables"]["monthly_attendance"]["Update"];
+
+// Employee Statutory Details
+export type EmployeeStatutoryDetailsDatabaseRow =
+  Database["public"]["Tables"]["employee_statutory_details"]["Row"];
+export type EmployeeStatutoryDetailsDatabaseInsert =
+  Database["public"]["Tables"]["employee_statutory_details"]["Insert"];
+export type EmployeeStatutoryDetailsDatabaseUpdate =
+  Database["public"]["Tables"]["employee_statutory_details"]["Update"];
+
+// Employee Bank Details
+export type EmployeeBankDetailsDatabaseRow =
+  Database["public"]["Tables"]["employee_bank_details"]["Row"];
+export type EmployeeBankDetailsDatabaseInsert =
+  Database["public"]["Tables"]["employee_bank_details"]["Insert"];
+export type EmployeeBankDetailsDatabaseUpdate =
+  Database["public"]["Tables"]["employee_bank_details"]["Update"];
+
+// Employee Addresses
+export type EmployeeAddressDatabaseRow =
+  Database["public"]["Tables"]["employee_addresses"]["Row"];
+export type EmployeeAddressDatabaseInsert =
+  Database["public"]["Tables"]["employee_addresses"]["Insert"];
+export type EmployeeAddressDatabaseUpdate =
+  Database["public"]["Tables"]["employee_addresses"]["Update"];
+
+// Employee Guardians
+export type EmployeeGuardianDatabaseRow =
+  Database["public"]["Tables"]["employee_guardians"]["Row"];
+export type EmployeeGuardianDatabaseInsert =
+  Database["public"]["Tables"]["employee_guardians"]["Insert"];
+export type EmployeeGuardianDatabaseUpdate =
+  Database["public"]["Tables"]["employee_guardians"]["Update"];
+
+export type EmployeeWorkDetailsDatabaseRow =
+  Database["public"]["Tables"]["work_details"]["Row"];
+export type EmployeeWorkDetailsDatabaseInsert =
+  Database["public"]["Tables"]["work_details"]["Insert"];
+export type EmployeeWorkDetailsDatabaseUpdate =
+  Database["public"]["Tables"]["work_details"]["Update"];
+
+// Employee Documents
+export type EmployeeDocumentsDatabaseRow =
+  Database["public"]["Tables"]["employee_documents"]["Row"];
+export type EmployeeDocumentsDatabaseInsert =
+  Database["public"]["Tables"]["employee_documents"]["Insert"];
+export type EmployeeDocumentsDatabaseUpdate =
+  Database["public"]["Tables"]["employee_documents"]["Update"];
+
+// Employee Letters
+export type EmployeeLetterDatabaseRow =
+  Database["public"]["Tables"]["employee_letter"]["Row"];
+export type EmployeeLetterDatabaseInsert =
+  Database["public"]["Tables"]["employee_letter"]["Insert"];
+export type EmployeeLetterDatabaseUpdate =
+  Database["public"]["Tables"]["employee_letter"]["Update"];
+
+
+// Feedback
+export type FeedbackDatabaseRow =
+  Database["public"]["Tables"]["feedback"]["Row"];
+export type FeedbackDatabaseInsert =
+  Database["public"]["Tables"]["feedback"]["Insert"];
+export type FeedbackDatabaseUpdate =
+  Database["public"]["Tables"]["feedback"]["Update"];
+
+// Payment Fields
+export type PaymentFieldDatabaseRow =
+  Database["public"]["Tables"]["payment_fields"]["Row"];
+export type PaymentFieldDatabaseInsert =
+  Database["public"]["Tables"]["payment_fields"]["Insert"];
+export type PaymentFieldDatabaseUpdate =
+  Database["public"]["Tables"]["payment_fields"]["Update"];
+
+// Statutory Bonus
+export type StatutoryBonusDatabaseRow =
+  Database["public"]["Tables"]["statutory_bonus"]["Row"];
+
+export type StatutoryBonusDatabaseInsert =
+  Database["public"]["Tables"]["statutory_bonus"]["Insert"];
+
+export type StatutoryBonusDatabaseUpdate =
+  Database["public"]["Tables"]["statutory_bonus"]["Update"];
+
+// Employee Bonus Details
+export type EmployeeBonusDetailsDatabaseRow =
+  Database["public"]["Tables"]["employee_bonus_details"]["Row"];
+export type EmployeeBonusDetailsDatabaseInsert =
+  Database["public"]["Tables"]["employee_bonus_details"]["Insert"];
+export type EmployeeBonusDetailsDatabaseUpdate =
+  Database["public"]["Tables"]["employee_bonus_details"]["Update"];
+
+// Employee Monthly Bonus Details
+export type EmployeeMonthlyBonusDetailsDatabaseRow =
+  Database["public"]["Tables"]["employee_monthly_bonus_details"]["Row"];
+export type EmployeeMonthlyBonusDetailsDatabaseInsert =
+  Database["public"]["Tables"]["employee_monthly_bonus_details"]["Insert"];
+export type EmployeeMonthlyBonusDetailsDatabaseUpdate =
+  Database["public"]["Tables"]["employee_monthly_bonus_details"]["Update"];
+
+// Employee Yearly Bonus Details
+export type EmployeeYearlyBonusDetailsDatabaseRow =
+  Database["public"]["Tables"]["employee_yearly_bonus_details"]["Row"];
+export type EmployeeYearlyBonusDetailsDatabaseInsert =
+  Database["public"]["Tables"]["employee_yearly_bonus_details"]["Insert"];
+export type EmployeeYearlyBonusDetailsDatabaseUpdate =
+  Database["public"]["Tables"]["employee_yearly_bonus_details"]["Update"];
+
+export type EmployeeProvidentFundDatabaseRow =
+  Database["public"]["Tables"]["employee_provident_fund"]["Row"];
+
+export type EmployeeProvidentFundDatabaseInsert =
+  Database["public"]["Tables"]["employee_provident_fund"]["Insert"];
+
+export type EmployeeProvidentFundDatabaseUpdate =
+  Database["public"]["Tables"]["employee_provident_fund"]["Update"];
+
+export type EmployeeStateInsuranceDatabaseRow =
+  Database["public"]["Tables"]["employee_state_insurance"]["Row"];
+
+export type EmployeeStateInsuranceDatabaseInsert =
+  Database["public"]["Tables"]["employee_state_insurance"]["Insert"];
+
+export type EmployeeStateInsuranceDatabaseUpdate =
+  Database["public"]["Tables"]["employee_state_insurance"]["Update"];
+
+export type ProfessionalTaxDatabaseRow =
+  Database["public"]["Tables"]["professional_tax"]["Row"];
+
+export type ProfessionalTaxDatabaseInsert =
+  Database["public"]["Tables"]["professional_tax"]["Insert"];
+
+export type ProfessionalTaxDatabaseUpdate =
+  Database["public"]["Tables"]["professional_tax"]["Update"];
+
+export type ProfessionalTaxGrossSalaryRangeType = {
+  start: number;
+  end: number;
+  value: number;
+}[];
+
+// Labour welfare funds
+export type LabourWelfareFundDatabaseRow =
+  Database["public"]["Tables"]["labour_welfare_fund"]["Row"];
+export type LabourWelfareFundDatabaseInsert =
+  Database["public"]["Tables"]["labour_welfare_fund"]["Insert"];
+export type LabourWelfareFundDatabaseUpdate =
+  Database["public"]["Tables"]["labour_welfare_fund"]["Update"];
+
+// Payment templates
+export type PaymentTemplateDatabaseRow =
+  Database["public"]["Tables"]["payment_templates"]["Row"];
+export type PaymentTemplateDatabaseInsert =
+  Database["public"]["Tables"]["payment_templates"]["Insert"];
+export type PaymentTemplateDatabaseUpdate =
+  Database["public"]["Tables"]["payment_templates"]["Update"];
+
+// Payment template assignment
+export type PaymentTemplateAssignmentsDatabaseRow =
+  Database["public"]["Tables"]["payment_template_assignments"]["Row"];
+export type PaymentTemplateAssignmentsDatabaseInsert =
+  Database["public"]["Tables"]["payment_template_assignments"]["Insert"];
+export type PaymentTemplateAssignmentsDatabaseUpdate =
+  Database["public"]["Tables"]["payment_template_assignments"]["Update"];
+
+// Payment template components
+export type PaymentTemplateComponentDatabaseRow =
+  Database["public"]["Tables"]["payment_template_components"]["Row"];
+export type PaymentTemplateComponentDatabaseInsert =
+  Database["public"]["Tables"]["payment_template_components"]["Insert"];
+export type PaymentTemplateComponentDatabaseUpdate =
+  Database["public"]["Tables"]["payment_template_components"]["Update"];
+
+// Payroll
+export type PayrollDatabaseRow = Database["public"]["Tables"]["payroll"]["Row"];
+export type PayrollDatabaseInsert =
+  Database["public"]["Tables"]["payroll"]["Insert"];
+export type PayrollDatabaseUpdate =
+  Database["public"]["Tables"]["payroll"]["Update"];
+
+// Salary Entries
+export type SalaryEntriesDatabaseRow =
+  Database["public"]["Tables"]["salary_entries"]["Row"] & {
+    monthly_ctc?: number;
+  };
+export type SalaryEntriesDatabaseInsert =
+  Database["public"]["Tables"]["salary_entries"]["Insert"] & {
+    monthly_ctc?: number;
+  };
+export type SalaryEntriesDatabaseUpdate =
+  Database["public"]["Tables"]["salary_entries"]["Update"] & {
+    monthly_ctc?: number;
+  };
+
+// Reimbursement
+export type ReimbursementInsert =
+  Database["public"]["Tables"]["reimbursements"]["Insert"];
+export type ReimbursementRow =
+  Database["public"]["Tables"]["reimbursements"]["Row"];
+export type ReimbursementsUpdate =
+  Database["public"]["Tables"]["reimbursements"]["Update"];
+
+//Employee_exit
+export type EmployeeExitRow =
+  Database["public"]["Tables"]["employee_exit"]["Row"];
+export type EmployeeExitInsert =
+  Database["public"]["Tables"]["employee_exit"]["Insert"];
+export type EmployeeExitUpdate =
+  Database["public"]["Tables"]["employee_exit"]["Update"];
+
+export type EmployeeDeathExitRow =
+  Database["public"]["Tables"]["death_exit"]["Row"];
+export type EmployeeDeathExitInsert =
+  Database["public"]["Tables"]["death_exit"]["Insert"];
+export type EmployeeDeathExitUpdate =
+  Database["public"]["Tables"]["death_exit"]["Update"];
+
+export type GratuityDatabaseRow =
+  Database["public"]["Tables"]["gratuity"]["Row"];
+export type GratuityDatabaseInsert =
+  Database["public"]["Tables"]["gratuity"]["Insert"];
+export type GratuityDatabaseUpdate =
+  Database["public"]["Tables"]["gratuity"]["Update"];
+
+export type LeaveEncashmentDatabaseRow =
+  Database["public"]["Tables"]["leave_encashment"]["Row"];
+
+export type LeaveEncashmentDatabaseInsert =
+  Database["public"]["Tables"]["leave_encashment"]["Insert"];
+
+export type LeaveEncashmentDatabaseUpdate =
+  Database["public"]["Tables"]["leave_encashment"]["Update"];
+export type IncidentsDatabaseRow =
+  Database["public"]["Tables"]["incidents"]["Row"];
+export type IncidentsDatabaseInsert =
+  Database["public"]["Tables"]["incidents"]["Insert"];
+export type IncidentsDatabaseUpdate =
+  Database["public"]["Tables"]["incidents"]["Update"];
+
+export type CasesDatabaseRow = Database["public"]["Tables"]["cases"]["Row"];
+export type CasesDatabaseInsert =
+  Database["public"]["Tables"]["cases"]["Insert"];
+export type CasesDatabaseUpdate =
+  Database["public"]["Tables"]["cases"]["Update"];
+
+export type LeavesDatabaseRow = Database["public"]["Tables"]["leaves"]["Row"];
+export type LeavesDatabaseInsert =
+  Database["public"]["Tables"]["leaves"]["Insert"];
+export type LeavesDatabaseUpdate =
+  Database["public"]["Tables"]["leaves"]["Update"];
+
+export type LeaveTypeDatabaseRow =
+  Database["public"]["Tables"]["leave_type"]["Row"];
+export type LeaveTypeDatabaseInsert =
+  Database["public"]["Tables"]["leave_type"]["Insert"];
+export type LeaveTypeDatabaseUpdate =
+  Database["public"]["Tables"]["leave_type"]["Update"];
+
+export type HolidaysDatabaseRow =
+  Database["public"]["Tables"]["holidays"]["Row"];
+export type HolidaysDatabaseInsert =
+  Database["public"]["Tables"]["holidays"]["Insert"];
+export type HolidaysDatabaseUpdate =
+  Database["public"]["Tables"]["holidays"]["Update"];
+
+// Holiday Config
+export type HolidayConfigDatabaseRow =
+  Database["public"]["Tables"]["holiday_config"]["Row"];
+export type HolidayConfigDatabaseInsert =
+  Database["public"]["Tables"]["holiday_config"]["Insert"];
+export type HolidayConfigDatabaseUpdate =
+  Database["public"]["Tables"]["holiday_config"]["Update"];
+
+export type InvoiceDatabaseRow = Database["public"]["Tables"]["invoice"]["Row"];
+export type InvoiceDatabaseInsert =
+  Database["public"]["Tables"]["invoice"]["Insert"];
+export type InvoiceDatabaseUpdate =
+  Database["public"]["Tables"]["invoice"]["Update"];
+
+export type ChatDatabaseRow = Database["public"]["Tables"]["chat"]["Row"];
+export type ChatDatabaseInsert = Database["public"]["Tables"]["chat"]["Insert"];
+export type ChatDatabaseUpdate = Database["public"]["Tables"]["chat"]["Update"];
+
+export type NotificationDatabaseRow =
+  Database["public"]["Tables"]["notifications"]["Row"];
+export type NotificationDatabaseInsert =
+  Database["public"]["Tables"]["notifications"]["Insert"];
+export type NotificationDatabaseUpdate =
+  Database["public"]["Tables"]["notifications"]["Update"];
+
+export type DepartmentsDatabaseRow =
+  Database["public"]["Tables"]["departments"]["Row"];
+export type DepartmentsDatabaseInsert =
+  Database["public"]["Tables"]["departments"]["Insert"];
+export type DepartmentsDatabaseUpdate =
+  Database["public"]["Tables"]["departments"]["Update"];
+
+export type SalaryFieldValuesDatabaseRow =
+  Database["public"]["Tables"]["salary_field_values"]["Row"];
+export type SalaryFieldValuesDatabaseInsert =
+  Database["public"]["Tables"]["salary_field_values"]["Insert"];
+export type SalaryFieldValuesDatabaseUpdate =
+  Database["public"]["Tables"]["salary_field_values"]["Update"];
+
+export type PayrollFieldsDatabaseRow =
+  Database["public"]["Tables"]["payroll_fields"]["Row"];
+export type PayrollFieldsDatabaseInsert =
+  Database["public"]["Tables"]["payroll_fields"]["Insert"];
+export type PayrollFieldsDatabaseUpdate =
+  Database["public"]["Tables"]["payroll_fields"]["Update"];
+
+export type PayeeDatabaseRow = Database["public"]["Tables"]["payee"]["Row"];
+export type PayeeDatabaseInsert =
+  Database["public"]["Tables"]["payee"]["Insert"];
+export type PayeeDatabaseUpdate =
+  Database["public"]["Tables"]["payee"]["Update"];
+
+export type ReimbursementVehicleDatabaseRow =
+  Database["public"]["Tables"] extends { reimbursement_vehicles: { Row: any } }
+    ? Database["public"]["Tables"]["reimbursement_vehicles"]["Row"]
+    : {
+        id: string;
+        reimbursement_id: string;
+        vehicle_id: string;
+        created_at: string;
+      };
+
+export type ReimbursementVehicleDatabaseInsert =
+  Database["public"]["Tables"] extends { reimbursement_vehicles: { Insert: any } }
+    ? Database["public"]["Tables"]["reimbursement_vehicles"]["Insert"]
+    : {
+        id?: string;
+        reimbursement_id: string;
+        vehicle_id: string;
+        created_at?: string;
+      };
+
+export type ReimbursementVehicleDatabaseUpdate =
+  Database["public"]["Tables"] extends { reimbursement_vehicles: { Update: any } }
+    ? Database["public"]["Tables"]["reimbursement_vehicles"]["Update"]
+    : {
+        id?: string;
+        reimbursement_id?: string;
+        vehicle_id?: string;
+        created_at?: string;
+      };
+
+export type VehiclesDatabaseRow =
+  Database["public"]["Tables"]["vehicles"]["Row"];
+export type VehiclesDatabaseInsert =
+  Database["public"]["Tables"]["vehicles"]["Insert"];
+export type VehiclesDatabaseUpdate =
+  Database["public"]["Tables"]["vehicles"]["Update"];
+
+export type VehiclesInsuranceDatabaseRow =
+  Database["public"]["Tables"]["vehicle_insurance_details"]["Row"];
+export type VehiclesInsuranceDatabaseInsert =
+  Database["public"]["Tables"]["vehicle_insurance_details"]["Insert"];
+export type VehiclesInsuranceDatabaseUpdate =
+  Database["public"]["Tables"]["vehicle_insurance_details"]["Update"];
+
+export type VehiclesUsageDatabaseRow =
+  Database["public"]["Tables"]["vehicle_usage"]["Row"];
+export type VehiclesUsageDatabaseInsert =
+  Database["public"]["Tables"]["vehicle_usage"]["Insert"];
+export type VehiclesUsageDatabaseUpdate =
+  Database["public"]["Tables"]["vehicle_usage"]["Update"];
+
+export type VehiclesLoanDetailsDatabaseRow =
+  Database["public"]["Tables"]["vehicle_loan_details"]["Row"];
+export type VehiclesLoanDetailsDatabaseInsert =
+  Database["public"]["Tables"]["vehicle_loan_details"]["Insert"];
+export type VehiclesLoanDetailsDatabaseUpdate =
+  Database["public"]["Tables"]["vehicle_loan_details"]["Update"];
+
+export type EmployeeLoanDetailsDatabaseRow =
+  Database["public"]["Tables"]["employee_loan_details"]["Row"];
+export type EmployeeLoanDetailsDatabaseInsert =
+  Database["public"]["Tables"]["employee_loan_details"]["Insert"];
+export type EmployeeLoanDetailsDatabaseUpdate =
+  Database["public"]["Tables"]["employee_loan_details"]["Update"];
+
+export type EmployeeAdvanceDetailsDatabaseRow =
+  Database["public"]["Tables"]["employee_advance_details"]["Row"];
+export type EmployeeAdvanceDetailsDatabaseInsert =
+  Database["public"]["Tables"]["employee_advance_details"]["Insert"];
+export type EmployeeAdvanceDetailsDatabaseUpdate =
+  Database["public"]["Tables"]["employee_advance_details"]["Update"];
+
+export type AdvanceDeductionDatabaseRow =
+  Database["public"]["Tables"]["advance_deduction"]["Row"];
+export type AdvanceDeductionDatabaseInsert =
+  Database["public"]["Tables"]["advance_deduction"]["Insert"];
+export type AdvanceDeductionDatabaseUpdate =
+  Database["public"]["Tables"]["advance_deduction"]["Update"];
+
+export type CompanyPrefixDatabaseRow =
+  Database["public"]["Tables"]["company_prefix"]["Row"];
+export type CompanyPrefixDatabaseInsert =
+  Database["public"]["Tables"]["company_prefix"]["Insert"];
+export type CompanyPrefixDatabaseUpdate =
+  Database["public"]["Tables"]["company_prefix"]["Update"];

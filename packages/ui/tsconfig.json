@@ -1,0 +1,15 @@
+{
+  "extends": "@canny_ecosystem/typescript/base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@/icon-name": [
+        "./src/components/icons/name.d.ts",
+        "./types/icon-name.d.ts"
+      ]
+    }
+  },
+  "include": ["src", ".", "../utils/src/hooks"],
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,192 @@
+import { Button } from "@canny_ecosystem/ui/button";
+import { Icon } from "@canny_ecosystem/ui/icon";
+import { useNavigate, useSubmit } from "@remix-run/react";
+import { ColumnVisibility } from "./column-visibility";
+import { cn } from "@canny_ecosystem/ui/utils/cn";
+import { useReimbursementStore } from "@/store/reimbursements";
+import { ReimbursementAdd } from "./reimbursement-add-option";
+import { ReimbursementMenu } from "./reimbursement-menu";
+import { clearCacheEntry } from "@/utils/cache";
+import { cacheKeyPrefix } from "@/constant";
+import { useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@canny_ecosystem/ui/alert-dialog";
+import { buttonVariants } from "@canny_ecosystem/ui/button";
+import { Label } from "@canny_ecosystem/ui/label";
+import {
+  reimbursementStatusArray,
+  reimbursementTypeArray,
+  transformStringArrayIntoOptions,
+} from "@canny_ecosystem/utils";
+import { Combobox } from "@canny_ecosystem/ui/combobox";
+import { DeleteBulkReimbursements } from "./delete-bulk-reimmbursements";
+import { useUser } from "@/utils/user";
+import { useToast } from "@canny_ecosystem/ui/use-toast";
+
+export function ReimbursementActions({
+  isEmpty,
+  env,
+}: {
+  isEmpty: boolean;
+  env: any;
+}) {
+  const { selectedRows } = useReimbursementStore();
+  const navigate = useNavigate();
+
+  const [status, setStatus] = useState("");
+  const [type, setType] = useState("");
+  const submit = useSubmit();
+
+  const { role } = useUser();
+  const { toast } = useToast();
+
+  const handleUpdateBulkReimbursements = () => {
+    const validEntries = selectedRows.filter(
+      (entry: any) => !entry.invoice_id?.length,
+    );
+    const skippedCount = selectedRows.length - validEntries.length;
+
+    if (skippedCount > 0) {
+      toast({
+        title: "Information",
+        description: `${skippedCount} ${
+          skippedCount === 1 ? "entry" : "entries"
+        } skipped because an invoice is already created for them.`,
+      });
+    }
+
+    const updates = validEntries.map((entry: any) => ({
+      id: entry.id,
+      status: status && status.trim() !== "" ? status : null,
+      type: type && type.trim() !== "" ? type : null,
+    }));
+
+    if (!updates.length) return;
+
+    clearCacheEntry(`${cacheKeyPrefix.reimbursements}`);
+    submit(
+      {
+        reimbursementsData: JSON.stringify(updates),
+        failedRedirect: "/approvals/reimbursements",
+      },
+      {
+        method: "POST",
+        action: "/approvals/reimbursements/update-bulk-reimbursements",
+      },
+    );
+  };
+
+  return (
+    <div className="gap-4 flex max-sm:justify-end max-sm:w-full">
+      <div className="flex gap-2">
+        <ColumnVisibility disabled={isEmpty} />
+        <ReimbursementAdd />
+        <Button
+          variant="muted"
+          size="icon"
+          className={cn(
+            "h-10 w-10  border border-input",
+            !selectedRows?.length && "hidden",
+          )}
+          disabled={!selectedRows.length}
+          onClick={() => navigate("/approvals/reimbursements/analytics")}
+        >
+          <Icon name="chart" className="h-[18px] w-[18px]" />
+        </Button>
+        <ReimbursementMenu
+          env={env}
+          selectedRows={selectedRows}
+          className={cn(
+            buttonVariants({ variant: "muted", size: "icon" }),
+            "h-10 w-10 border border-input",
+            (!selectedRows.length ||
+              selectedRows.every((row: any) => row.invoice_id?.length > 0)) &&
+              "hidden",
+            role === "executive" && "hidden",
+          )}
+        />
+        <div
+          className={cn(
+            "border border-dotted border-r-muted-foreground",
+            (!selectedRows.length ||
+              selectedRows.every((row: any) => row.invoice_id?.length > 0)) &&
+              "hidden",
+            role === "executive" && "hidden",
+          )}
+        />
+
+        <div className={cn("h-full", !selectedRows.length && "hidden")}>
+          <AlertDialog>
+            <AlertDialogTrigger
+              className={cn(
+                buttonVariants({
+                  variant: "muted",
+                  size: "icon",
+                }),
+                "h-10 w-10 border border-input",
+                (!selectedRows.length ||
+                  selectedRows.every(
+                    (row: any) => row.invoice_id?.length > 0,
+                  )) &&
+                  "hidden",
+                role === "executive" && "hidden",
+              )}
+            >
+              <Icon name="edit" className="h-[18px] w-[18px]" />
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Update Bulk Reimbursements</AlertDialogTitle>
+              </AlertDialogHeader>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1">
+                  <Label className="text-sm font-medium">Status</Label>
+                  <Combobox
+                    options={transformStringArrayIntoOptions(
+                      reimbursementStatusArray as unknown as string[],
+                    )}
+                    value={status}
+                    onChange={(e) => setStatus(e)}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <Label className="text-sm font-medium">Type</Label>
+                  <Combobox
+                    options={transformStringArrayIntoOptions(
+                      reimbursementTypeArray as unknown as string[],
+                    )}
+                    value={type}
+                    onChange={(e) => setType(e)}
+                  />
+                </div>
+              </div>
+              <AlertDialogFooter className="pt-2">
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={!status?.length && !type?.length}
+                  className={cn(buttonVariants({ variant: "default" }))}
+                  onClick={handleUpdateBulkReimbursements}
+                >
+                  Update
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+
+        <DeleteBulkReimbursements
+          selectedRows={selectedRows}
+          className={role === "executive" ? "hidden" : undefined}
+        />
+      </div>
+    </div>
+  );
+}

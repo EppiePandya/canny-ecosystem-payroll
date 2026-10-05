@@ -1,0 +1,126 @@
+import { Button } from "@canny_ecosystem/ui/button";
+import { Checkbox } from "@canny_ecosystem/ui/checkbox";
+import { Icon } from "@canny_ecosystem/ui/icon";
+import { TableHead, TableHeader, TableRow } from "@canny_ecosystem/ui/table";
+import { cn } from "@canny_ecosystem/ui/utils/cn";
+import { useSearchParams } from "@remix-run/react";
+
+type Props = {
+  table?: any;
+  className?: string;
+  loading?: boolean;
+};
+
+// make sure the order is same as header order
+export const ExitPaymentColumnIdArray = [
+  "employee_code",
+  "employee_name",
+  "last_working_day",
+  "esic_exit_date",
+  "exit_reason",
+  "death_case",
+  "note",
+] as const;
+
+export type ExitPaymentColumnId = (typeof ExitPaymentColumnIdArray)[number];
+
+export function ExitPaymentTableHeader({ table, className, loading }: Props) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sortParam = searchParams.get("sort");
+  const [column, value] = sortParam ? sortParam.split(":") : [];
+
+  const createSortQuery = (name: string) => {
+    if (`${name}:asc` === sortParam) searchParams.set("sort", `${name}:desc`);
+    else if (`${name}:desc` === sortParam) searchParams.delete("sort");
+    else searchParams.set("sort", `${name}:asc`);
+    setSearchParams(searchParams);
+  };
+
+  const isVisible = (id: string) =>
+    loading ||
+    table
+      ?.getAllLeafColumns()
+      ?.find((col: any) => {
+        return col.id === id;
+      })
+      ?.getIsVisible();
+
+  const isEnableSorting = (id: string) =>
+    (
+      loading ||
+      table?.getAllLeafColumns()?.find((col: any) => {
+        return col.id === id;
+      })
+    )?.getCanSort();
+
+  const columnName = (id: string) =>
+    loading ||
+    table?.getAllLeafColumns()?.find((col: any) => {
+      return col.id === id;
+    })?.columnDef?.header;
+
+  return (
+    <TableHeader className={cn("bg-card", className)}>
+      <TableRow className="h-[45px] flex items-center min-w-full">
+        <TableHead className="px-4 py-2 flex items-center sticky left-0 min-w-12 max-w-12 bg-card z-10">
+          <Checkbox
+            id="select-all"
+            checked={
+              table?.getIsAllPageRowsSelected() ||
+              (table?.getIsSomePageRowsSelected() && "indeterminate")
+            }
+            onCheckedChange={(value) => {
+              table?.toggleAllPageRowsSelected(!!value);
+            }}
+          />
+        </TableHead>
+
+        {ExitPaymentColumnIdArray?.map((id) => {
+          return (
+            isVisible(id) && (
+              <TableHead
+                key={id}
+                className={cn(
+                  "px-4 py-2 flex items-center min-w-36 max-w-36",
+                  id === "employee_code" &&
+                    "md:sticky md:left-12 md:bg-card md:z-10 min-w-32 max-w-32",
+                  id === "employee_name" &&
+                    "md:sticky md:left-44 md:bg-card md:z-10 min-w-40 max-w-40",
+                  id === "note" && "flex-1 min-w-60 max-w-none",
+                )}
+              >
+                <Button
+                  className="p-0 hover:bg-transparent space-x-1 disabled:opacity-100"
+                  variant="ghost"
+                  disabled={!isEnableSorting(id)}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    createSortQuery(id);
+                  }}
+                >
+                  <span className="capitalize">{columnName(id)}</span>
+
+                  <Icon
+                    name="chevron-up"
+                    className={cn(
+                      "hidden",
+                      id === column && value === "desc" && "flex",
+                    )}
+                  />
+                  <Icon
+                    name="chevron-down"
+                    className={cn(
+                      "hidden",
+                      id === column && value === "asc" && "flex",
+                    )}
+                  />
+                </Button>
+              </TableHead>
+            )
+          );
+        })}
+        <TableHead className="sticky right-0 flex items-center min-w-20 max-w-20 bg-card z-10" />
+      </TableRow>
+    </TableHeader>
+  );
+}
