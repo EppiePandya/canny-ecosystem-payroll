@@ -14,6 +14,7 @@ import {
 import { buttonVariants } from "@canny_ecosystem/ui/button";
 import { cn } from "@canny_ecosystem/ui/utils/cn";
 import {
+  calculateNetAmountAfterEntryCreated,
   formatDate,
   formatDateTime,
   roundToNearest,
@@ -168,18 +169,46 @@ export const DownloadBankAdvice = ({
 
   function transformSalaryData(data: any[]) {
     return data.map((emp) => {
-      let earnings = 0;
-      let deductions = 0;
-      for (const entry of emp.salary_entries.salary_field_values) {
-        if (entry.payroll_fields.type === "earning") earnings += entry.amount;
-        else if (entry.payroll_fields.type === "deduction")
-          deductions += entry.amount;
+      let netPay = 0;
+      if (
+        emp?.calculation?.netAmount !== undefined &&
+        emp?.calculation?.netAmount !== null
+      ) {
+        netPay = Number(emp.calculation.netAmount);
+      } else {
+        const sfvs = emp?.salary_entries?.salary_field_values;
+        if (Array.isArray(sfvs) && sfvs.length > 0) {
+          const isNetName = (str: string) => {
+            const n = (str || "").toUpperCase().replace(/[^A-Z]/g, "");
+            return (
+              n === "NET" ||
+              n === "NETPAY" ||
+              n === "NETSALARY" ||
+              n === "NETAMOUNT" ||
+              n === "NETPAYABLE" ||
+              n === "NETPAYABLEAMOUNT" ||
+              n === "NETWAGE" ||
+              n === "NETWAGES"
+            );
+          };
+          const netEntry = sfvs.find((entry: any) =>
+            isNetName(entry.payroll_fields?.name || ""),
+          );
+          if (netEntry && netEntry.amount != null) {
+            netPay = Number(netEntry.amount);
+          } else {
+            netPay = calculateNetAmountAfterEntryCreated(emp);
+          }
+        } else {
+          netPay = calculateNetAmountAfterEntryCreated(emp);
+        }
       }
+
       return {
-        amount: earnings - deductions,
-        employee_id: emp.employee?.id,
+        amount: roundToNearest(netPay),
+        employee_id: emp.employee?.id || emp.employee_id,
         employees: {
-          employee_code: emp.employee?.employee_code,
+          employee_code: emp.employee?.employee_code || emp.employee_code,
           first_name: emp.employee?.first_name,
           middle_name: emp.employee?.middle_name,
           last_name: emp.employee?.last_name,

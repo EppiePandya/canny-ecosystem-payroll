@@ -212,13 +212,30 @@ export const DownloadEsiFormat = ({
   }, [data]);
 
   useEffect(() => {
+    const cleanUpper = (s: string) =>
+      String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const isNetOrSubtotal = (n: string) =>
+      [
+        "NET",
+        "NETPAY",
+        "NETSALARY",
+        "NETAMOUNT",
+        "ACTUALWAGES",
+        "ACTUALWAGE",
+        "GROSS",
+        "GROSSSALARY",
+      ].includes(cleanUpper(n));
+
     const initialSelected: string[] = [];
     for (const emp of data) {
       const fieldValues = emp.salary_entries?.salary_field_values || [];
       for (const f of fieldValues) {
         if (f.payroll_fields?.type === "earning" && f.payroll_fields?.name) {
           const name = f.payroll_fields.name;
-          if (!initialSelected.includes(name)) {
+          if (
+            !initialSelected.includes(name) &&
+            !isNetOrSubtotal(name)
+          ) {
             if (
               name.toLowerCase().includes("basic") ||
               f.consider_for_esic === true ||
@@ -263,6 +280,20 @@ export const DownloadEsiFormat = ({
   }, [companyId, supabase]);
 
   function transformSalaryData(data: any[], selectedEsi?: any) {
+    const cleanUpper = (s: string) =>
+      String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const isNetOrSubtotal = (n: string) =>
+      [
+        "NET",
+        "NETPAY",
+        "NETSALARY",
+        "NETAMOUNT",
+        "ACTUALWAGES",
+        "ACTUALWAGE",
+        "GROSS",
+        "GROSSSALARY",
+      ].includes(cleanUpper(n));
+
     return data.map((emp: any) => {
       const earnings =
         emp.salary_entries?.salary_field_values
@@ -272,6 +303,7 @@ export const DownloadEsiFormat = ({
               payroll_fields: { type: string; name: string };
             }) =>
               e.payroll_fields.type === "earning" &&
+              !isNetOrSubtotal(e.payroll_fields.name) &&
               selectedEsiFields.includes(e.payroll_fields.name),
           )
           ?.reduce((sum: number, e: { amount: number }) => sum + e.amount, 0) ||

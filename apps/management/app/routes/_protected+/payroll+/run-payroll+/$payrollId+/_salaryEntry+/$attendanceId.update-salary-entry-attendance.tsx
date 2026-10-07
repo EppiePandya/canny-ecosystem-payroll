@@ -3,7 +3,6 @@ import { parseWithZod } from "@conform-to/zod";
 import { AttendanceSchema, isGoodStatus } from "@canny_ecosystem/utils";
 import { getSupabaseWithHeaders } from "@canny_ecosystem/supabase/server";
 import {
-  recalculateAndPersistSalaryEntriesForAttendances,
   recalculatePayrollTotals,
   updateAttendance,
 } from "@canny_ecosystem/supabase/mutations";
@@ -62,12 +61,6 @@ export async function action({ request, params }: ActionFunctionArgs) {
     });
 
     if (isGoodStatus(status)) {
-      await recalculateAndPersistSalaryEntriesForAttendances({
-        supabase,
-        attendanceIds: [attendanceId],
-        payrollId,
-      });
-
       await recalculatePayrollTotals({
         supabase,
         payrollId,

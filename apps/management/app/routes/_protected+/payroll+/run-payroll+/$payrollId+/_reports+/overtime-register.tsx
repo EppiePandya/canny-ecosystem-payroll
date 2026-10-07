@@ -8,6 +8,7 @@ import { getCompanyIdOrFirstCompany } from "@/utils/server/company.server";
 import {
   type EmployeeWorkDetailsDataType,
   getCompanyById,
+  getPayrollById,
   getPrimaryLocationByCompanyId,
   getSalaryEntriesForSalaryRegisterAndAll,
 } from "@canny_ecosystem/supabase/queries";
@@ -22,6 +23,8 @@ import type {
   LocationDatabaseRow,
 } from "@canny_ecosystem/supabase/types";
 import {
+  defaultMonth,
+  defaultYear,
   getMonthNameFromNumber,
   replaceUnderscore,
   formatNumber,
@@ -139,19 +142,25 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const { supabase } = getSupabaseWithHeaders({ request });
   const { companyId } = await getCompanyIdOrFirstCompany(request, supabase);
 
+  const { data: payroll } = await getPayrollById({ payrollId, supabase });
+  const effectiveCompanyId = payroll?.company_id || companyId;
+
   const { data: employeeCompanyData } = await getCompanyById({
     supabase,
-    id: companyId,
+    id: effectiveCompanyId,
   });
   const { data: employeesCompanyLocationData } =
-    await getPrimaryLocationByCompanyId({ supabase, companyId });
+    await getPrimaryLocationByCompanyId({
+      supabase,
+      companyId: effectiveCompanyId,
+    });
 
   const { data: payrollDataAndOthers } =
     await getSalaryEntriesForSalaryRegisterAndAll({
       supabase,
       payrollId,
-      month: 1,
-      year: 2026,
+      month: payroll?.month ?? defaultMonth,
+      year: payroll?.year ?? defaultYear,
     });
 
   return {
@@ -159,6 +168,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
       employeeCompanyData,
       employeesCompanyLocationData,
       payrollDataAndOthers,
+      payroll,
     },
     payrollId,
   };
@@ -170,12 +180,23 @@ export default function OvertimeRegister() {
   const navigate = useNavigate();
   const { isDocument } = useIsDocument();
 
-  const selectedIds = new Set(selectedRows.map((emp: any) => emp.employee?.id));
+  const selectedIds = new Set(
+    selectedRows
+      .filter((emp: any) => !emp.payroll_id || emp.payroll_id === payrollId)
+      .map((emp: any) => emp.employee?.id || emp.employee_id)
+      .filter(Boolean),
+  );
+
+  const hasMatchingSelectedRows = (data?.payrollDataAndOthers || []).some(
+    (emp: any) => selectedIds.has(emp.employee?.id || emp.employee_id),
+  );
 
   const updatedData = {
     ...data,
     payrollDataAndOthers: data?.payrollDataAndOthers?.filter((emp: any) => {
-      return selectedIds.has(emp.employee?.id);
+      const empId = emp.employee?.id || emp.employee_id;
+      if (hasMatchingSelectedRows && !selectedIds.has(empId)) return false;
+      return true;
     }),
   };
 

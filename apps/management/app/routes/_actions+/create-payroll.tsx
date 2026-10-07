@@ -60,8 +60,11 @@ export async function action({
 
       const transformedSalaryEntries: any[] = [];
       const uniqueComponentsSet = new Map();
+      const baseTimestamp = Date.now();
 
-      for (const entry of salaryImportData) {
+      for (let i = 0; i < salaryImportData.length; i++) {
+        const entry = salaryImportData[i];
+        const rowCreatedAt = new Date(baseTimestamp + i * 1000).toISOString();
         const { month, year, employee_id, ...rest } = entry;
 
         const attendanceFieldKeys = [
@@ -75,7 +78,7 @@ export async function action({
           "casual_leaves",
         ];
 
-        const attendance: Record<string, any> = {};
+        const attendance: Record<string, any> = { created_at: rowCreatedAt };
         const components: Record<string, any> = {};
 
         for (const key in rest) {
@@ -129,6 +132,7 @@ export async function action({
         transformedSalaryEntries.push({
           monthly_attendance_id,
           monthly_ctc: entry.monthly_ctc,
+          created_at: rowCreatedAt,
         });
       }
 
@@ -314,10 +318,13 @@ export async function action({
         "casual_leaves",
       ];
 
-      for (const entry of salaryImportData) {
+      const baseTimestamp = Date.now();
+      for (let i = 0; i < salaryImportData.length; i++) {
+        const entry = salaryImportData[i];
+        const rowCreatedAt = new Date(baseTimestamp + i * 1000).toISOString();
         const { month, year, employee_id, ...rest } = entry;
 
-        const attendanceInsert: Record<string, any> = {};
+        const attendanceInsert: Record<string, any> = { created_at: rowCreatedAt };
         for (const k of attendanceFields) {
           if (rest[k] !== undefined) attendanceInsert[k] = rest[k];
         }
@@ -336,7 +343,7 @@ export async function action({
           continue;
         }
 
-        const attendUpdate: EmployeeMonthlyAttendanceDatabaseUpdate = {};
+        const attendUpdate: EmployeeMonthlyAttendanceDatabaseUpdate = { created_at: rowCreatedAt };
         for (const k of attendanceFields) {
           if (rest[k] !== undefined) (attendUpdate as any)[k] = rest[k];
         }
@@ -354,6 +361,7 @@ export async function action({
               monthly_attendance_id: attendanceData.id,
               payroll_id: payrollId,
               monthly_ctc: Math.round(Number(entry.monthly_ctc || 0)),
+              created_at: rowCreatedAt,
             } as SalaryEntriesDatabaseInsert,
             {
               onConflict: "monthly_attendance_id, payroll_id",

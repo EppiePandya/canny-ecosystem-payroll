@@ -1,7 +1,6 @@
 import { cacheKeyPrefix } from "@/constant";
 import { clearCacheEntry, clearExactCacheEntry } from "@/utils/cache";
 import {
-  recalculateAndPersistSalaryEntriesForAttendances,
   recalculatePayrollTotals,
   updatePayrollFieldsById,
   updateSalaryFieldValuesById,

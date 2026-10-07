@@ -24,6 +24,7 @@ import { useSalaryEntriesStore } from "@/store/salary-entries";
 import {
   SalaryRegisterHTML,
   generateSalaryRegisterPdf,
+  parseEmployeeComponents,
   type SalaryRegisterDataType,
 } from "@/components/employees/pdf/salary-register-pdf";
 
@@ -105,6 +106,9 @@ export default function SalaryRegister() {
     const preferredEarningOrder = ["BASIC", "DA", "VDA", "PH WAGES", "PH WAGE", "HRA"];
     const preferredDeductionOrder = ["PF", "ESIC", "PT"];
 
+    const cleanUpper = (s: string) =>
+      String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
     const employeeData: any[] = (data.payrollDataAndOthers || []).map((emp: any) => {
       const earningFields = new Map<string, true>();
       const deductionFields = new Map<string, true>();
@@ -113,10 +117,56 @@ export default function SalaryRegister() {
 
       const rawSe = emp.salary_entries;
       const se = Array.isArray(rawSe) ? rawSe[0] : rawSe;
-      for (const entry of se?.salary_field_values || []) {
+      const fieldValues = se?.salary_field_values || [];
+
+      let netPay: number | null = null;
+      let actualWages: number | null = null;
+      let totalDeductions: number | null = null;
+
+      const hasIndividualEarnings = fieldValues.some((entry: any) => {
+        const name = entry?.payroll_fields?.name || entry?.name || "";
+        const type = (entry?.payroll_fields?.type || entry?.type || "").toLowerCase();
+        const c = cleanUpper(name);
+        return (
+          (type === "earning" || type.includes("earning")) &&
+          !["ACTUALWAGES", "ACTUALWAGE", "NETPAY", "NETSALARY", "GROSS", "GROSSSALARY", "GROSSWAGES", "GROSSINCOME"].includes(c)
+        );
+      });
+
+      for (const entry of fieldValues) {
         const name = entry?.payroll_fields?.name || entry?.name;
-        const type = entry?.payroll_fields?.type || entry?.type || "earning";
+        const type = (entry?.payroll_fields?.type || entry?.type || "earning").toLowerCase();
         if (!name) continue;
+        const c = cleanUpper(name);
+
+        if (c === "NETPAY" || c === "NETSALARY") {
+          netPay = Number(entry?.amount || 0);
+          continue;
+        }
+
+        if (
+          c === "TOTALDEDUCTIONS" ||
+          c === "TOTALDED" ||
+          c === "TOTALDEDUCTION"
+        ) {
+          totalDeductions = Number(entry?.amount || 0);
+          continue;
+        }
+
+        if (
+          c === "ACTUALWAGES" ||
+          c === "ACTUALWAGE" ||
+          c === "GROSS" ||
+          c === "GROSSSALARY" ||
+          c === "GROSSWAGES" ||
+          c === "GROSSINCOME"
+        ) {
+          actualWages = Number(entry?.amount || 0);
+          if (hasIndividualEarnings) {
+            continue;
+          }
+        }
+
         if (type === "deduction") {
           if (!deductionFields.has(name)) deductionFields.set(name, true);
           deductionsMap[name] = Number(entry?.amount || 0);
@@ -188,6 +238,9 @@ export default function SalaryRegister() {
         earnings,
         deductions,
         monthly_ctc: emp?.salary_entries?.monthly_ctc,
+        netPay: netPay ?? emp?.net_pay ?? emp?.net_salary,
+        actualWages: actualWages ?? emp?.actual_wages,
+        totalDeductions: totalDeductions ?? emp?.total_deductions,
       };
     });
 
@@ -242,15 +295,10 @@ export default function SalaryRegister() {
       const uniqueDeductions = Array.from(deductionFieldsSet);
 
       const rows = slipData.employeeData.map((emp: any, idx: number) => {
-        const gross = emp.earnings.reduce(
-          (s: number, e: any) => s + Number(e.amount || 0),
-          0,
-        );
-        const totalDed = emp.deductions.reduce(
-          (s: number, d: any) => s + Number(d.amount || 0),
-          0,
-        );
-        const net = gross - totalDed;
+        const c = parseEmployeeComponents(emp);
+        const gross = c.grossSalary;
+        const totalDed = c.totalDeductions;
+        const net = c.netPay;
 
         const row: Record<string, any> = {
           "Sr No.": idx + 1,

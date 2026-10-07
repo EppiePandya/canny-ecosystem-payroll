@@ -555,15 +555,75 @@ export const salaryEntryColumns = ({
     {
       id: "net_amount",
       accessorKey: "net_amount",
-      header: "Net Amount",
-      sortingFn: (a, b) =>
-        calculateNetAmountAfterEntryCreated(a.original) -
-        calculateNetAmountAfterEntryCreated(b.original),
-      cell: ({ row }) => (
-        <p className="truncate">
-          {roundToNearest(calculateNetAmountAfterEntryCreated(row.original))}
-        </p>
-      ),
+      header: "Net Pay",
+      sortingFn: (a, b) => {
+        const isNetName = (str: string) => {
+          const n = (str || "").toUpperCase().replace(/[^A-Z]/g, "");
+          return (
+            n === "NET" ||
+            n === "NETPAY" ||
+            n === "NETSALARY" ||
+            n === "NETAMOUNT" ||
+            n === "NETPAYABLE" ||
+            n === "NETPAYABLEAMOUNT" ||
+            n === "NETWAGE" ||
+            n === "NETWAGES"
+          );
+        };
+        const getNet = (emp: any) => {
+          const sfvs = emp?.salary_entries?.salary_field_values;
+          if (Array.isArray(sfvs) && sfvs.length > 0) {
+            const netPayEntry = sfvs.find((entry: any) =>
+              isNetName(entry.payroll_fields?.name || ""),
+            );
+            if (netPayEntry && netPayEntry.amount != null) {
+              return Number(netPayEntry.amount);
+            }
+          }
+          if (emp?.calculation?.netAmount !== undefined && emp?.calculation?.netAmount !== null) {
+            return Number(emp.calculation.netAmount);
+          }
+          return calculateNetAmountAfterEntryCreated(emp);
+        };
+        return getNet(a.original) - getNet(b.original);
+      },
+      cell: ({ row }) => {
+        const isNetName = (str: string) => {
+          const n = (str || "").toUpperCase().replace(/[^A-Z]/g, "");
+          return (
+            n === "NET" ||
+            n === "NETPAY" ||
+            n === "NETSALARY" ||
+            n === "NETAMOUNT" ||
+            n === "NETPAYABLE" ||
+            n === "NETPAYABLEAMOUNT" ||
+            n === "NETWAGE" ||
+            n === "NETWAGES"
+          );
+        };
+        const sfvs = row.original.salary_entries?.salary_field_values;
+        let displayVal: number | undefined = undefined;
+        if (Array.isArray(sfvs) && sfvs.length > 0) {
+          const netPayEntry = sfvs.find((entry: any) =>
+            isNetName(entry.payroll_fields?.name || ""),
+          );
+          if (netPayEntry && netPayEntry.amount != null) {
+            displayVal = Number(netPayEntry.amount);
+          }
+        }
+        if (displayVal === undefined) {
+          displayVal =
+            row.original.calculation?.netAmount !== undefined &&
+            row.original.calculation?.netAmount !== null
+              ? Number(row.original.calculation.netAmount)
+              : calculateNetAmountAfterEntryCreated(row.original);
+        }
+        return (
+          <p className="truncate font-semibold text-foreground">
+            {roundToNearest(displayVal)}
+          </p>
+        );
+      },
     },
 
     {

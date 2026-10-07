@@ -244,6 +244,21 @@ export function resolveSalarySlipBreakdown({
   const earnings: { name: string; amount: number }[] = [];
   const deductions: { name: string; amount: number }[] = [];
   const employerContributions: { name: string; amount: number }[] = [];
+  let netPay: number | null = null;
+  let actualWages: number | null = null;
+
+  const cleanUpper = (s: string) =>
+    String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  const hasIndividualEarnings = persistedEntries.some((sfv: any) => {
+    const name = sfv.payroll_fields?.name || sfv.name || "";
+    const type = (sfv.payroll_fields?.type || sfv.type || "").toLowerCase();
+    const c = cleanUpper(name);
+    return (
+      (type === "earning" || type.includes("earning")) &&
+      !["ACTUALWAGES", "ACTUALWAGE", "NETPAY", "NETSALARY"].includes(c)
+    );
+  });
 
   const fieldMap = new Map<string, any>();
   for (const sfv of persistedEntries) {
@@ -253,7 +268,30 @@ export function resolveSalarySlipBreakdown({
     if (!name) continue;
 
     const lowerName = name.trim().toLowerCase();
+    const clean = cleanUpper(name);
     fieldMap.set(lowerName, { ...sfv, name, amount, type });
+
+    if (clean === "NETPAY" || clean === "NETSALARY") {
+      netPay = amount;
+      continue;
+    }
+
+    if (
+      clean === "TOTALDEDUCTIONS" ||
+      clean === "TOTALDED" ||
+      clean === "TOTALDEDUCTION"
+    ) {
+      // Subtotal of deductions - skip from additive deduction items
+      continue;
+    }
+
+    if (clean === "ACTUALWAGES" || clean === "ACTUALWAGE") {
+      actualWages = amount;
+      if (hasIndividualEarnings) {
+        // Reference rate / wage - skip from additive earning items
+        continue;
+      }
+    }
 
     if (
       type === "employer_contribution" ||
@@ -460,5 +498,7 @@ export function resolveSalarySlipBreakdown({
     earnings,
     deductions,
     employerContributions,
+    netPay,
+    actualWages,
   };
 }

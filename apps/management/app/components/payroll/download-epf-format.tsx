@@ -65,34 +65,91 @@ export const prepareEpfFormat = async ({
   const attendanceDate = new Date();
   attendanceDate.setMonth(attendanceDate.getMonth() - 1);
 
+  // 1. Employee EPF settings
+  const rawEmpContrib = Number(selectedEpf?.employee_contribution) || 0.12;
+  const employeeContributionRate =
+    rawEmpContrib > 1 ? rawEmpContrib / 100 : rawEmpContrib;
+
+  const isEmployeeRestricted = selectedEpf
+    ? selectedEpf.restrict_employee_contribution === true
+    : false;
+  const employeeRestrictValue = selectedEpf
+    ? Number(selectedEpf.employee_restrict_value) || 15000
+    : 15000;
+
+  // 2. Employer EPF settings (e.g. 13% total: 4.67% EPF + 8.33% EPS)
+  const rawEmployerContrib = Number(selectedEpf?.employer_contribution) || 0.13;
+  const employerContributionRate =
+    rawEmployerContrib > 1 ? rawEmployerContrib / 100 : rawEmployerContrib;
+
+  const isEmployerRestricted = selectedEpf
+    ? selectedEpf.restrict_employer_contribution === true
+    : false;
+  const employerRestrictValue = selectedEpf
+    ? Number(selectedEpf.employer_restrict_value) || 15000
+    : 15000;
+  const edliRestrictValue = selectedEpf
+    ? Number(selectedEpf.edli_restrict_value) || employerRestrictValue
+    : 15000;
+
+  // Statutory EPS rate is 8.33%
+  const epsRate = 0.0833;
+
   const extractedData = updatedData.map((formatData) => {
+    const pfDeduction = Number(formatData?.pfAmount) || 0;
     const baseAmount = Number(formatData?.amount) || 0;
 
-    const isRestricted = selectedEpf
-      ? selectedEpf.restrict_employee_contribution === true
-      : false;
+    let epfContribution = pfDeduction;
+    let epfWageBase = baseAmount;
 
-    const employeeRestrictValue = selectedEpf
-      ? selectedEpf.employee_restrict_value
-      : 15000;
+    if (pfDeduction > 0) {
+      epfContribution = pfDeduction;
+      if (
+        !epfWageBase ||
+        Math.abs(roundToNearest(epfWageBase * employeeContributionRate) - pfDeduction) > 5
+      ) {
+        epfWageBase = roundToNearest(
+          pfDeduction / (employeeContributionRate || 0.12),
+        );
+      }
+    } else if (baseAmount > 0) {
+      const cappedBase = isEmployeeRestricted
+        ? Math.min(baseAmount, employeeRestrictValue)
+        : baseAmount;
+      epfContribution = roundToNearest(cappedBase * employeeContributionRate);
+      epfWageBase = cappedBase;
+    }
 
-    const employeeContribution = selectedEpf
-      ? selectedEpf.employee_contribution
-      : 0.12;
+    if (isEmployeeRestricted && epfWageBase > employeeRestrictValue) {
+      epfWageBase = employeeRestrictValue;
+    }
 
-    const pfBreakup = calculateEmployerPfStatutoryBreakup({
-      epfWageBase: baseAmount,
-      statutoryPf: selectedEpf
-        ? selectedEpf
-        : {
-            restrict_employer_contribution: isRestricted,
-            employer_restrict_value: employeeRestrictValue,
-          },
-    });
+    // Employer wage base and statutory ceilings (respected if restriction is enabled)
+    const employerWageBase = isEmployerRestricted
+      ? Math.min(epfWageBase, employerRestrictValue)
+      : epfWageBase;
 
-    const epfContribution = roundToNearest(
-      (pfBreakup.pfTotal / 0.12) * employeeContribution,
-    );
+    const epsWages = isEmployerRestricted
+      ? Math.min(roundToNearest(epfWageBase), employerRestrictValue)
+      : roundToNearest(epfWageBase);
+
+    const edliWages = isEmployerRestricted
+      ? Math.min(roundToNearest(epfWageBase), edliRestrictValue)
+      : roundToNearest(epfWageBase);
+
+    // EPS share (Pension) - Column 8
+    const epsContribution =
+      epfContribution > 0 ? roundToNearest(epsWages * epsRate) : 0;
+
+    // ER share (Employer EPF Share) - Column 9
+    // Matches employer contribution policy (e.g. 13% total: 4.67% EPF + 8.33% EPS)
+    let diffEpf_Eps = 0;
+    if (epfContribution > 0) {
+      const totalEmployerPf = roundToNearest(
+        employerWageBase * employerContributionRate,
+      );
+      diffEpf_Eps = Math.max(0, totalEmployerPf - epsContribution);
+    }
 
     return {
       uan_number: formatData?.statutoryDetails?.uan_number || null,
@@ -104,12 +161,12 @@ export const prepareEpfFormat = async ({
           .trim()
           .toUpperCase() || null,
       gross_wages: roundToNearest(formatData?.gross),
-      epf_wages: roundToNearest(pfBreakup.pfTotal / 0.12),
-      eps_wages: Math.min(roundToNearest(pfBreakup.pfTotal / 0.12), 15000),
-      edli_wages: Math.min(roundToNearest(pfBreakup.pfTotal / 0.12), 15000),
+      epf_wages: roundToNearest(epfWageBase),
+      eps_wages: epsWages,
+      edli_wages: edliWages,
       epf_contribution: epfContribution,
-      eps_contribution: pfBreakup.eps,
-      diffEpf_Eps: pfBreakup.employerEpf,
+      eps_contribution: epsContribution,
+      diffEpf_Eps: diffEpf_Eps,
       refund: 0,
       ncp_days: formatData.absentDays,
     };
@@ -210,25 +267,81 @@ export const DownloadEpfFormat = ({
         ? selectedEpf.employee_restrict_value
         : 15000;
 
-      const gross = roundToNearest(
-        emp.salary_entries.salary_field_values
-          .filter((e: any) => e.payroll_fields.type === "earning")
-          .reduce((sum: number, e: any) => sum + e.amount, 0),
-      );
+      const cleanUpper = (s: string) =>
+        String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const isNetField = (n: string) =>
+        [
+          "NET",
+          "NETPAY",
+          "NETSALARY",
+          "NETAMOUNT",
+          "NETPAYABLE",
+          "NETPAYABLEAMOUNT",
+          "NETWAGE",
+          "NETWAGES",
+        ].includes(cleanUpper(n));
+      const isSubtotalField = (n: string) =>
+        [
+          "ACTUALWAGES",
+          "ACTUALWAGE",
+          "GROSS",
+          "GROSSSALARY",
+          "GROSSWAGES",
+          "GROSSINCOME",
+        ].includes(cleanUpper(n));
 
+      const sfvs = emp.salary_entries?.salary_field_values || [];
+
+      // 1. Gross wages directly from calculation or subtotal or true individual earnings
+      let gross = 0;
+      if (
+        emp?.calculation?.grossAmount != null &&
+        Number(emp.calculation.grossAmount) > 0
+      ) {
+        gross = Number(emp.calculation.grossAmount);
+      } else {
+        const actualWagesField = sfvs.find((e: any) =>
+          isSubtotalField(e.payroll_fields?.name || ""),
+        );
+        if (actualWagesField && Number(actualWagesField.amount) > 0) {
+          gross = Number(actualWagesField.amount);
+        } else {
+          gross = sfvs
+            .filter(
+              (e: any) =>
+                e.payroll_fields?.type === "earning" &&
+                !isNetField(e.payroll_fields?.name) &&
+                !isSubtotalField(e.payroll_fields?.name),
+            )
+            .reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
+        }
+      }
+
+      // 2. Actual PF deduction from sheet/table
+      const isPfField = (e: any) =>
+        ["PF", "EPF", "PROVIDENTFUND"].includes(
+          cleanUpper(e?.payroll_fields?.name || ""),
+        );
+      const pfEntry = sfvs.find(isPfField);
+      const pfAmount = pfEntry && pfEntry.amount != null ? Number(pfEntry.amount) : 0;
+
+      // 3. EPF eligible wages
       const earnings = roundToNearest(
-        emp.salary_entries.salary_field_values
+        sfvs
           .filter(
             (e: any) =>
-              e.payroll_fields.type === "earning" &&
-              selectedEpfFields.includes(e.payroll_fields.name),
+              e.payroll_fields?.type === "earning" &&
+              !isNetField(e.payroll_fields?.name) &&
+              !isSubtotalField(e.payroll_fields?.name) &&
+              selectedEpfFields.includes(e.payroll_fields?.name),
           )
-          .reduce((sum: number, e: any) => sum + e.amount, 0),
+          .reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0),
       );
 
       return {
         amount: earnings,
-        gross,
+        pfAmount,
+        gross: roundToNearest(gross),
         isRestricted,
         employeeContribution,
         employeeRestrictValue,
