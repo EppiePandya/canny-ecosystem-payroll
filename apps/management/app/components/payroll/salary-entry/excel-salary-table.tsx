@@ -162,10 +162,21 @@ export function ExcelSalaryTable({
 
   // Dynamic Net Pay calculator
   const getNetAmount = (row: any) => {
-    if (row.calculation?.netAmount !== undefined) {
-      return row.calculation.netAmount;
-    }
     const sfvs = row.salary_entries?.salary_field_values || [];
+    if (sfvs.length > 0) {
+      const netPayEntry = sfvs.find((sfv: any) => {
+        const n = (sfv.payroll_fields?.name || sfv.name || "")
+          .toUpperCase()
+          .replace(/[^A-Z]/g, "");
+        return n === "NETPAY" || n === "NETSALARY";
+      });
+      if (netPayEntry && netPayEntry.amount != null) {
+        return Number(netPayEntry.amount);
+      }
+    }
+    if (row.calculation?.netAmount !== undefined && row.calculation?.netAmount !== null) {
+      return Number(row.calculation.netAmount);
+    }
     if (sfvs.length > 0) {
       let totalEarnings = 0;
       let totalDeductions = 0;
@@ -189,7 +200,7 @@ export function ExcelSalaryTable({
         return totalEarnings - totalDeductions;
       }
     }
-    return row.calculation?.netAmount ?? 0;
+    return 0;
   };
 
   // Helper to extract value for a cell

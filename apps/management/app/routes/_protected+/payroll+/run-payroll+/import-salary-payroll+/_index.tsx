@@ -19,7 +19,6 @@ import {
   CardTitle,
 } from "@canny_ecosystem/ui/card";
 import { Input } from "@canny_ecosystem/ui/input";
-import type { ImportSalaryPayrollHeaderSchemaObject } from "@canny_ecosystem/utils";
 import {
   getPayrollById,
   type ImportSalaryPayrollDataType,
@@ -32,7 +31,6 @@ import {
   replaceDash,
   ImportSalaryPayrollHeaderSchema,
   ImportSalaryPayrollDataSchema,
-  componentTypeArray,
   defaultYear,
   defaultMonth,
 } from "@canny_ecosystem/utils";
@@ -41,6 +39,7 @@ import { useImportStoreForSalaryPayroll } from "@/store/import";
 import { cn } from "@canny_ecosystem/ui/utils/cn";
 import { SalaryPayrollImportData } from "@/components/payroll/import-export/salary-payroll-import-data";
 import { Icon } from "@canny_ecosystem/ui/icon";
+import { useToast } from "@canny_ecosystem/ui/use-toast";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { getSupabaseWithHeaders } from "@canny_ecosystem/supabase/server";
 import { getCompanyIdOrFirstCompany } from "@/utils/server/company.server";
@@ -63,6 +62,9 @@ const FIELD_CONFIGS: FieldConfig[] = [
     key: "esic_number",
   },
   {
+    key: "monthly_ctc",
+  },
+  {
     key: "present_days",
     required: true,
   },
@@ -79,6 +81,9 @@ const DEFAULT_PAYMENT_FIELDS = [
   { name: "BONUS", display_name: "BONUS", type: "earning" },
   { name: "OVERTIME", display_name: "OVERTIME", type: "earning" },
   { name: "OVERTIME_AMOUNT", display_name: "OVERTIME AMOUNT", type: "earning" },
+  { name: "ACTUAL_WAGES", display_name: "ACTUAL WAGES", type: "earning" },
+  { name: "NET_PAY", display_name: "NET PAY", type: "earning" },
+  { name: "TOTAL_DEDUCTIONS", display_name: "TOTAL DEDUCTIONS", type: "deduction" },
   { name: "PF", display_name: "PF", type: "deduction" },
   { name: "ESI", display_name: "ESI", type: "deduction" },
   { name: "PT", display_name: "PT", type: "deduction" },
@@ -177,8 +182,642 @@ export async function action({ request }: ActionFunctionArgs) {
   return json({});
 }
 
+export function findBestHeaderRowIndex(rows: any[][]): number {
+  const keywords = [
+    "employee",
+    "emp",
+    "code",
+    "name",
+    "id",
+    "present",
+    "absent",
+    "basic",
+    "salary",
+    "wages",
+    "hra",
+    "pf",
+    "esi",
+    "esic",
+    "deduction",
+    "overtime",
+    "ot",
+    "net pay",
+    "gross",
+    "bonus",
+    "transport",
+    "advance",
+  ];
+
+  let bestIndex = 0;
+  let bestScore = -1;
+
+  for (let i = 0; i < Math.min(rows.length, 50); i++) {
+    const row = rows[i] || [];
+    const cleanCells = row
+      .map((h) => String(h || "").trim())
+      .filter((h) => h !== "");
+
+    if (cleanCells.length < 2) continue;
+
+    let matchCount = 0;
+    for (const cell of cleanCells) {
+      const lower = cell.toLowerCase();
+      if (keywords.some((k) => lower.includes(k))) {
+        matchCount++;
+      }
+    }
+
+    const totalScore = matchCount * 5 + Math.min(cleanCells.length, 25);
+
+    if (totalScore > bestScore && matchCount >= 2) {
+      bestScore = totalScore;
+      bestIndex = i;
+    }
+  }
+
+  return bestIndex;
+}
+
+const normalizeHeader = (str: string) =>
+  String(str || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const isIgnoredHeader = (header: string): boolean => {
+  const norm = normalizeHeader(header);
+  const compact = norm.replace(/\s+/g, "");
+
+  // Personal / Employee informational headers (NEVER show in Other Components)
+  if (
+    compact === "name" ||
+    compact.includes("employeename") ||
+    compact.includes("employeesname") ||
+    compact.includes("empname") ||
+    compact.includes("workername") ||
+    compact.includes("staffname") ||
+    compact.includes("father") ||
+    compact.includes("husband") ||
+    compact.includes("mother") ||
+    compact === "doj" ||
+    compact.includes("dateofjoin") ||
+    compact.includes("joiningdate") ||
+    compact === "dob" ||
+    compact.includes("dateofbirth") ||
+    compact.includes("birthdate") ||
+    compact.includes("designation") ||
+    compact.includes("department") ||
+    compact === "dept" ||
+    compact.includes("location") ||
+    compact.includes("branch") ||
+    compact.includes("site") ||
+    compact.includes("area") ||
+    compact.includes("zone") ||
+    compact.includes("gender") ||
+    compact.includes("sex") ||
+    compact.includes("category") ||
+    compact.includes("grade") ||
+    compact.includes("marital") ||
+    compact.includes("sign") ||
+    compact === "sing" ||
+    compact.includes("remark") ||
+    compact.includes("status") ||
+    compact === "srno" ||
+    compact === "sno" ||
+    compact === "slno" ||
+    compact === "serialno" ||
+    compact.includes("bank") ||
+    compact.includes("ifsc") ||
+    compact.includes("accountno") ||
+    compact.includes("acno") ||
+    compact === "pan" ||
+    compact === "panno" ||
+    compact === "aadhar" ||
+    compact === "aadharno" ||
+    compact === "mobile" ||
+    compact === "mobileno" ||
+    compact === "phone" ||
+    compact === "phoneno"
+  ) {
+    return true;
+  }
+
+  // Identifiers and attendance fields that belong to their own sections, not Other Components
+  if (
+    compact === "employeecode" ||
+    compact === "empcode" ||
+    compact === "empid" ||
+    compact === "employeeid" ||
+    compact === "empno" ||
+    compact === "employeeno" ||
+    compact === "code" ||
+    compact === "punchid" ||
+    compact === "biometricid" ||
+    compact === "uan" ||
+    compact === "uanno" ||
+    compact === "uannumber" ||
+    compact === "esicno" ||
+    compact === "esicnumber" ||
+    compact === "esino" ||
+    compact === "esid" ||
+    compact.includes("present") ||
+    compact === "prsnt" ||
+    compact === "pdays" ||
+    compact === "ot" ||
+    compact === "othrs" ||
+    compact === "othour" ||
+    compact === "othours" ||
+    compact === "overtimehrs" ||
+    compact === "overtimehours" ||
+    compact.includes("workingdays") ||
+    compact.includes("workinghours") ||
+    compact.includes("absent") ||
+    compact === "lwp" ||
+    compact.includes("holiday") ||
+    compact === "ph" ||
+    compact.includes("paidleave") ||
+    compact.includes("earnedleave") ||
+    compact === "pl" ||
+    compact === "el" ||
+    compact.includes("casualleave") ||
+    compact === "cl" ||
+    compact === "ctc" ||
+    compact === "monthlyctc"
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
+export const isComponentSynonym = (keyA: string, keyB: string): boolean => {
+  const na = normalizeHeader(keyA);
+  const nb = normalizeHeader(keyB);
+  if (na === nb) return true;
+  if (/\btot(al)?\s*ded\b/i.test(na) && /\btot(al)?\s*ded\b/i.test(nb)) return true;
+  if (/\bactual\s*wage\b/i.test(na) && /\bactual\s*wage\b/i.test(nb)) return true;
+  const isNetPattern = (n: string) =>
+    n === "net" ||
+    /^net(\s*(pay|salary|amount|wages?|payable))?$/i.test(n) ||
+    /\bnet\s*(pay|salary|amount|wages?|payable)\b/i.test(n);
+  if (isNetPattern(na) && isNetPattern(nb)) return true;
+  return false;
+};
+
+export function autoDetectPayrollMappings({
+  headers,
+  currentFieldConfigs,
+  dbFields,
+}: {
+  headers: string[];
+  currentFieldConfigs: FieldConfig[];
+  dbFields: Array<{ name: string; display_name?: string; type?: string }>;
+}): {
+  mapping: Record<string, string>;
+  configsToAdd: FieldConfig[];
+  typesToAdd: Record<string, "earning" | "deduction">;
+} {
+  const mapping: Record<string, string> = {};
+  const configsToAdd: FieldConfig[] = [];
+  const typesToAdd: Record<string, "earning" | "deduction"> = {};
+  const usedHeaders = new Set<string>();
+
+  // 1. Employee Code
+  const empCodeHeader = headers.find((h) => {
+    const n = normalizeHeader(h);
+    if (/branch|dept|bank|ifsc|pin/i.test(n)) return false;
+    return (
+      /^(emp|employee)\s*(code|id|no)$/i.test(n) ||
+      n === "code" ||
+      n === "empcode" ||
+      n === "employee code" ||
+      n === "emp code" ||
+      n === "punch id" ||
+      n === "biometric id"
+    );
+  });
+  if (empCodeHeader) {
+    mapping["employee_code"] = empCodeHeader;
+    usedHeaders.add(empCodeHeader);
+  }
+
+  // 2. UAN Number
+  const uanHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    return /\buan\b/i.test(n);
+  });
+  if (uanHeader) {
+    mapping["uan_number"] = uanHeader;
+    usedHeaders.add(uanHeader);
+  }
+
+  // 3. ESIC Number
+  const esicNoHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    if (/0\s*75|%|amount|amt|ded|rate/i.test(n)) return false;
+    return /\b(esic?|ip)\b/i.test(n) && /\b(no|num|number|id|code)\b/i.test(n);
+  });
+  if (esicNoHeader) {
+    mapping["esic_number"] = esicNoHeader;
+    usedHeaders.add(esicNoHeader);
+  }
+
+  // 4. Monthly CTC
+  const ctcHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    return (
+      n === "ctc" ||
+      n === "c t c" ||
+      /^(monthly\s*ctc|ctc\s*pm|ctc)$/i.test(n) ||
+      /cost\s*to\s*company/i.test(n)
+    );
+  });
+  if (ctcHeader) {
+    mapping["monthly_ctc"] = ctcHeader;
+    usedHeaders.add(ctcHeader);
+  }
+
+  // 5. Present Days
+  const presentDaysHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    return (
+      /no\s*of\s*(days\s*)?present/i.test(n) ||
+      /present\s*days?/i.test(n) ||
+      /days\s*present/i.test(n) ||
+      n === "present" ||
+      n === "prsnt" ||
+      n === "p days" ||
+      n === "total present"
+    );
+  });
+  if (presentDaysHeader) {
+    mapping["present_days"] = presentDaysHeader;
+    usedHeaders.add(presentDaysHeader);
+  }
+
+  // 6. Overtime Hours
+  const otHoursHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    if (/amount|amt|pay|wages|rate|earning/i.test(n)) return false;
+    return (
+      /ot\s*hrs?/i.test(n) ||
+      /ot\s*hours?/i.test(n) ||
+      /overtime\s*hrs?/i.test(n) ||
+      /overtime\s*hours?/i.test(n) ||
+      n === "ot" ||
+      n === "overtime"
+    );
+  });
+  if (otHoursHeader) {
+    mapping["overtime_hours"] = otHoursHeader;
+    usedHeaders.add(otHoursHeader);
+  }
+
+  // 7. Working Days
+  const workingDaysHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    if (/present|absent/i.test(n)) return false;
+    return (
+      /working\s*days?/i.test(n) ||
+      /total\s*days?/i.test(n) ||
+      /month\s*days?/i.test(n) ||
+      /work\s*days?/i.test(n)
+    );
+  });
+  if (workingDaysHeader) {
+    mapping["working_days"] = workingDaysHeader;
+    usedHeaders.add(workingDaysHeader);
+  }
+
+  // 8. Working Hours
+  const workingHoursHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    if (/ot|overtime/i.test(n)) return false;
+    return (
+      /working\s*hours?/i.test(n) ||
+      /working\s*hrs?/i.test(n) ||
+      /total\s*hours?/i.test(n) ||
+      /work\s*hours?/i.test(n)
+    );
+  });
+  if (workingHoursHeader) {
+    mapping["working_hours"] = workingHoursHeader;
+    usedHeaders.add(workingHoursHeader);
+  }
+
+  // 9. Absent Days
+  const absentDaysHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    return (
+      /absent\s*days?/i.test(n) ||
+      /no\s*of\s*(days\s*)?absent/i.test(n) ||
+      n === "absent" ||
+      n === "abs days" ||
+      n === "lwp"
+    );
+  });
+  if (absentDaysHeader) {
+    mapping["absent_days"] = absentDaysHeader;
+    usedHeaders.add(absentDaysHeader);
+  }
+
+  // 10. Paid Holidays
+  const holidaysHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    return (
+      /paid\s*holidays?/i.test(n) ||
+      n === "holidays" ||
+      n === "holiday" ||
+      n === "ph"
+    );
+  });
+  if (holidaysHeader) {
+    mapping["paid_holidays"] = holidaysHeader;
+    usedHeaders.add(holidaysHeader);
+  }
+
+  // 11. Paid Leaves
+  const paidLeavesHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    return (
+      /paid\s*leaves?/i.test(n) ||
+      /earned\s*leaves?/i.test(n) ||
+      n === "pl" ||
+      n === "el"
+    );
+  });
+  if (paidLeavesHeader) {
+    mapping["paid_leaves"] = paidLeavesHeader;
+    usedHeaders.add(paidLeavesHeader);
+  }
+
+  // 12. Casual Leaves
+  const casualLeavesHeader = headers.find((h) => {
+    if (usedHeaders.has(h)) return false;
+    const n = normalizeHeader(h);
+    return /casual\s*leaves?/i.test(n) || n === "cl";
+  });
+  if (casualLeavesHeader) {
+    mapping["casual_leaves"] = casualLeavesHeader;
+    usedHeaders.add(casualLeavesHeader);
+  }
+
+  // Standard salary component aliases
+  const COMPONENT_MATCHERS: Array<{
+    key: string;
+    altKey?: string;
+    defaultType: "earning" | "deduction";
+    test: (n: string) => boolean;
+  }> = [
+    {
+      key: "BASIC",
+      defaultType: "earning",
+      test: (n) => /\bbasic\b/i.test(n),
+    },
+    {
+      key: "HRA",
+      defaultType: "earning",
+      test: (n) => /\b(hra|house\s*rent)\b/i.test(n),
+    },
+    {
+      key: "OVERTIME_AMOUNT",
+      altKey: "OVERTIME",
+      defaultType: "earning",
+      test: (n) =>
+        /\b(ot|overtime)\b/i.test(n) &&
+        /\b(amount|amt|wages|pay|rate|earning)\b/i.test(n),
+    },
+    {
+      key: "ACTUAL_WAGES",
+      altKey: "ACTUAL_WAGE",
+      defaultType: "earning",
+      test: (n) =>
+        /\bactual\s*wages?\b/i.test(n) ||
+        n === "actual wages" ||
+        n === "actual wage" ||
+        n === "wages",
+    },
+    {
+      key: "NET_PAY",
+      altKey: "NET_SALARY",
+      defaultType: "earning",
+      test: (n) =>
+        n === "net" ||
+        /^net(\s*(pay|salary|amount|wages?|payable))?$/i.test(n) ||
+        /\bnet(\s*(pay|salary|amount|wages?|payable))?\b/i.test(n) ||
+        n === "net pay" ||
+        n === "net salary",
+    },
+    {
+      key: "TOTAL_DEDUCTIONS",
+      altKey: "TOTAL_DED",
+      defaultType: "deduction",
+      test: (n) => /\btot(al)?\s*ded(uctions?)?\b/i.test(n),
+    },
+    {
+      key: "PF",
+      defaultType: "deduction",
+      test: (n) => /\b(pf|epf|provident\s*fund)\b/i.test(n),
+    },
+    {
+      key: "ESI",
+      altKey: "ESIC",
+      defaultType: "deduction",
+      test: (n) => /\b(esic?|esi)\b/i.test(n),
+    },
+    {
+      key: "PT",
+      altKey: "PROFESSIONAL_TAX",
+      defaultType: "deduction",
+      test: (n) =>
+        /\b(p\s*tax|ptax|prof\s*tax|professional\s*tax|pt)\b/i.test(n),
+    },
+    {
+      key: "LWF",
+      defaultType: "deduction",
+      test: (n) => /\b(lwf|labou?r\s*welfare)\b/i.test(n),
+    },
+    {
+      key: "ADVANCE",
+      defaultType: "deduction",
+      test: (n) => /\b(adv|advance|salary\s*advance)\b/i.test(n),
+    },
+    {
+      key: "BONUS",
+      defaultType: "earning",
+      test: (n) => /\bbonus\b/i.test(n),
+    },
+    {
+      key: "TRANSPORTATION",
+      altKey: "CONVEYANCE",
+      defaultType: "earning",
+      test: (n) =>
+        /\b(transport(ation)?|conveyance|travel)\b/i.test(n),
+    },
+    {
+      key: "DA",
+      defaultType: "earning",
+      test: (n) => /\b(da|dearness)\b/i.test(n) && !/\bbasic\b/i.test(n),
+    },
+    {
+      key: "SPECIAL_ALLOWANCE",
+      defaultType: "earning",
+      test: (n) => /\b(special\s*allowance|spl\s*all)\b/i.test(n),
+    },
+    {
+      key: "TDS",
+      defaultType: "deduction",
+      test: (n) => /\b(tds|income\s*tax)\b/i.test(n),
+    },
+    {
+      key: "LOAN",
+      defaultType: "deduction",
+      test: (n) => /\bloan\b/i.test(n),
+    },
+  ];
+
+  for (const cm of COMPONENT_MATCHERS) {
+    const matchedHeader = headers.find((h) => {
+      if (usedHeaders.has(h)) return false;
+      return cm.test(normalizeHeader(h));
+    });
+
+    if (matchedHeader) {
+      const existingInCurrent = currentFieldConfigs.find(
+        (f) =>
+          normalizeHeader(f.key) === normalizeHeader(cm.key) ||
+          (cm.altKey && normalizeHeader(f.key) === normalizeHeader(cm.altKey)) ||
+          isComponentSynonym(f.key, cm.key) ||
+          cm.test(normalizeHeader(f.key)),
+      );
+
+      const dbMatch = dbFields.find(
+        (db) =>
+          db.name.toUpperCase() === cm.key ||
+          (cm.altKey && db.name.toUpperCase() === cm.altKey) ||
+          normalizeHeader(db.name) === normalizeHeader(cm.key),
+      );
+
+      const targetKey = existingInCurrent
+        ? existingInCurrent.key
+        : dbMatch
+        ? dbMatch.name
+        : cm.key;
+      const targetType =
+        (dbMatch?.type as "earning" | "deduction") || cm.defaultType;
+
+      mapping[targetKey] = matchedHeader;
+      typesToAdd[targetKey] = targetType;
+      usedHeaders.add(matchedHeader);
+
+      if (
+        !existingInCurrent &&
+        !configsToAdd.some((f) => isComponentSynonym(f.key, targetKey))
+      ) {
+        configsToAdd.push({
+          key: targetKey,
+          type: targetType,
+          required: false,
+        });
+      }
+    }
+  }
+
+  // Match any other dbFields by name / display_name
+  for (const dbField of dbFields) {
+    if (
+      Object.keys(mapping).some(
+        (k) => k.toLowerCase() === dbField.name.toLowerCase(),
+      )
+    ) {
+      continue;
+    }
+    const matchedHeader = headers.find((h) => {
+      if (usedHeaders.has(h)) return false;
+      const nH = normalizeHeader(h);
+      const nDb = normalizeHeader(dbField.name);
+      const nDisp = normalizeHeader(dbField.display_name || "");
+      return nH === nDb || (nDisp && nH === nDisp);
+    });
+
+    if (matchedHeader) {
+      const targetKey = dbField.name;
+      const targetType =
+        (dbField.type as "earning" | "deduction") || "earning";
+      mapping[targetKey] = matchedHeader;
+      typesToAdd[targetKey] = targetType;
+      usedHeaders.add(matchedHeader);
+
+      if (
+        !currentFieldConfigs.some(
+          (f) => f.key.toLowerCase() === targetKey.toLowerCase(),
+        ) &&
+        !configsToAdd.some(
+          (f) => f.key.toLowerCase() === targetKey.toLowerCase(),
+        )
+      ) {
+        configsToAdd.push({
+          key: targetKey,
+          type: targetType,
+          required: false,
+        });
+      }
+    }
+  }
+
+  // For any remaining unused header, if it's not ignored, treat as custom component
+  for (const header of headers) {
+    if (usedHeaders.has(header) || isIgnoredHeader(header)) {
+      continue;
+    }
+
+    const isDeduction =
+      /\b(ded|deduction|pf|esi|tax|pt|lwf|adv|advance|loan|tds|fine|penalty|insurance|recovery|union|mess)\b/i.test(
+        header,
+      );
+    const compType: "earning" | "deduction" = isDeduction
+      ? "deduction"
+      : "earning";
+    const compKey = header.trim();
+
+    mapping[compKey] = header;
+    typesToAdd[compKey] = compType;
+    usedHeaders.add(header);
+
+    if (
+      !currentFieldConfigs.some(
+        (f) => f.key.toLowerCase() === compKey.toLowerCase(),
+      ) &&
+      !configsToAdd.some(
+        (f) => f.key.toLowerCase() === compKey.toLowerCase(),
+      )
+    ) {
+      configsToAdd.push({
+        key: compKey,
+        type: compType,
+        required: false,
+      });
+    }
+  }
+
+  return { mapping, configsToAdd, typesToAdd };
+}
+
 export default function PayrollImportFieldMapping() {
   const today = new Date();
+  const { toast } = useToast();
+  const lastProcessedHeaderKey = useRef<string>("");
   const { env, companyId, dbPaymentFields } = useLoaderData<typeof loader>();
   const { supabase } = useSupabase({ env });
   const location = useLocation();
@@ -388,33 +1027,7 @@ export default function PayrollImportFieldMapping() {
     const data = allSheetsData[sheetName] || [];
     setExcelRawData(data);
 
-    const keywords = [
-      "employee",
-      "code",
-      "name",
-      "id",
-      "date",
-      "present",
-      "absent",
-      "status",
-      "basic",
-      "salary",
-    ];
-    let foundIndex = 0;
-    for (let i = 0; i < Math.min(data.length, 50); i++) {
-      const row = data[i] || [];
-      const cleanRow = row
-        .map((h) => String(h || "").trim())
-        .filter((h) => h !== "");
-      const hasKeyword = cleanRow.some((h) =>
-        keywords.some((k) => h.toLowerCase().includes(k)),
-      );
-      if (cleanRow.length >= 2 && hasKeyword) {
-        foundIndex = i;
-        break;
-      }
-    }
-
+    const foundIndex = findBestHeaderRowIndex(data);
     setHeaderRow(foundIndex + 1);
     setStartRow(foundIndex + 2);
     setEndRow(findLastNonEmptyRow(data));
@@ -493,32 +1106,7 @@ export default function PayrollImportFieldMapping() {
             const allRows = results.data;
             if (allRows.length === 0) return;
 
-            const keywords = [
-              "employee",
-              "code",
-              "name",
-              "id",
-              "date",
-              "present",
-              "absent",
-              "status",
-              "basic",
-              "salary",
-            ];
-            let foundIndex = 0;
-            for (let i = 0; i < Math.min(allRows.length, 50); i++) {
-              const row = allRows[i] || [];
-              const cleanRow = row
-                .map((h) => String(h || "").trim())
-                .filter((h) => h !== "");
-              const hasKeyword = cleanRow.some((h) =>
-                keywords.some((k) => h.toLowerCase().includes(k)),
-              );
-              if (cleanRow.length >= 2 && hasKeyword) {
-                foundIndex = i;
-                break;
-              }
-            }
+            const foundIndex = findBestHeaderRowIndex(allRows);
 
             setSheetNames([file.name]);
             setSelectedSheet(file.name);
@@ -559,32 +1147,7 @@ export default function PayrollImportFieldMapping() {
 
             const initialSheet = names[0];
             const initialData = sheets[initialSheet] || [];
-            const keywords = [
-              "employee",
-              "code",
-              "name",
-              "id",
-              "date",
-              "present",
-              "absent",
-              "status",
-              "basic",
-              "salary",
-            ];
-            let foundIndex = 0;
-            for (let i = 0; i < Math.min(initialData.length, 50); i++) {
-              const row = initialData[i] || [];
-              const cleanRow = row
-                .map((h) => String(h || "").trim())
-                .filter((h) => h !== "");
-              const hasKeyword = cleanRow.some((h) =>
-                keywords.some((k) => h.toLowerCase().includes(k)),
-              );
-              if (cleanRow.length >= 2 && hasKeyword) {
-                foundIndex = i;
-                break;
-              }
-            }
+            const foundIndex = findBestHeaderRowIndex(initialData);
 
             setSheetNames(names);
             setSelectedSheet(initialSheet);
@@ -606,78 +1169,75 @@ export default function PayrollImportFieldMapping() {
     }
   }, [file]);
 
-  useEffect(() => {
-    if (headerArray.length > 0 && Object.keys(fieldMapping).length === 0) {
-      const initialMapping: Record<string, string> = {};
-      const newConfigsToAdd: FieldConfig[] = [];
-      const newTypesToAdd: Record<string, "earning" | "deduction"> = {};
+  const applyAutoMatching = (headersToMatch = headerArray, notify = false) => {
+    if (!headersToMatch || headersToMatch.length === 0) return;
 
-      for (const field of fieldConfigs) {
-        const matchedHeader = headerArray.find(
-          (value) =>
-            pipe(replaceUnderscore, replaceDash)(value?.toLowerCase()) ===
-            pipe(replaceUnderscore, replaceDash)(field.key?.toLowerCase()),
+    const { mapping, configsToAdd, typesToAdd } = autoDetectPayrollMappings({
+      headers: headersToMatch,
+      currentFieldConfigs: fieldConfigs,
+      dbFields,
+    });
+
+    setFieldConfigs((prev) => {
+      const combined = [...prev, ...configsToAdd];
+      const result: FieldConfig[] = [];
+      const seen = new Set<string>();
+
+      for (const item of combined) {
+        const alreadySeen = Array.from(seen).find((k) =>
+          isComponentSynonym(k, item.key),
         );
-        if (matchedHeader) {
-          initialMapping[field.key] = matchedHeader;
+        if (!alreadySeen) {
+          result.push(item);
+          seen.add(item.key);
         }
       }
+      return result;
+    });
 
-      for (const dbField of dbFields) {
-        const matchedHeader = headerArray.find(
-          (value) =>
-            pipe(replaceUnderscore, replaceDash)(value?.toLowerCase()) ===
-            pipe(replaceUnderscore, replaceDash)(dbField.name?.toLowerCase()),
-        );
-        if (matchedHeader) {
-          initialMapping[dbField.name] = matchedHeader;
+    if (Object.keys(typesToAdd).length > 0) {
+      setFieldTypes((prev) => ({
+        ...prev,
+        ...typesToAdd,
+      }));
+    }
+
+    setFieldMapping((prev) => {
+      const updated = { ...prev, ...mapping };
+      const keys = Object.keys(updated);
+      for (let i = 0; i < keys.length; i++) {
+        for (let j = i + 1; j < keys.length; j++) {
+          const k1 = keys[i];
+          const k2 = keys[j];
           if (
-            !fieldConfigs.some(
-              (f) => f.key.toLowerCase() === dbField.name.toLowerCase(),
-            ) &&
-            !newConfigsToAdd.some(
-              (f) => f.key.toLowerCase() === dbField.name.toLowerCase(),
-            )
+            updated[k1] &&
+            updated[k2] &&
+            updated[k1] === updated[k2] &&
+            isComponentSynonym(k1, k2)
           ) {
-            newConfigsToAdd.push({
-              key: dbField.name,
-              type: dbField.type,
-              required: false,
-            });
-          }
-          if (dbField.type) {
-            newTypesToAdd[dbField.name] = dbField.type as "earning" | "deduction";
+            delete updated[k2];
           }
         }
       }
+      return updated;
+    });
 
-      if (newConfigsToAdd.length > 0) {
-        setFieldConfigs((prev) => {
-          const updated = [...prev];
-          for (const item of newConfigsToAdd) {
-            if (
-              !updated.some(
-                (f) => f.key.toLowerCase() === item.key.toLowerCase(),
-              )
-            ) {
-              updated.push(item);
-            }
-          }
-          return updated;
-        });
-      }
+    if (notify) {
+      const matchCount = Object.keys(mapping).length;
+      toast({
+        title: "Auto-Match Complete",
+        description: `Successfully auto-matched ${matchCount} field(s) from your Excel sheet.`,
+        variant: "success",
+      });
+    }
+  };
 
-      if (Object.keys(newTypesToAdd).length > 0) {
-        setFieldTypes((prev) => ({
-          ...prev,
-          ...newTypesToAdd,
-        }));
-      }
-
-      setFieldMapping(initialMapping);
-
-      if (headerArray.length > 5 && !fetcher.data && !isProcessingAI) {
-        handleAISuggestion();
+  useEffect(() => {
+    if (headerArray.length > 0) {
+      const currentKey = headerArray.join("|");
+      if (currentKey !== lastProcessedHeaderKey.current) {
+        lastProcessedHeaderKey.current = currentKey;
+        applyAutoMatching(headerArray, false);
       }
     }
   }, [headerArray, dbFields]);
@@ -1039,6 +1599,17 @@ export default function PayrollImportFieldMapping() {
                 </CardDescription>
               </div>
               <div className="flex gap-4 items-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => applyAutoMatching(headerArray, true)}
+                  className="gap-2 border-primary/30 hover:bg-primary/10 text-primary font-medium shadow-sm"
+                  title="Automatically match all Excel columns to payroll fields"
+                >
+                  <Icon name="magic" size="sm" className="text-primary" />
+                  Auto-Match All Fields
+                </Button>
                 <div className="px-4 py-2 bg-primary/5 border border-primary/10 rounded-lg">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-primary/70 mb-0.5">
                     Target Period
@@ -1210,7 +1781,7 @@ export default function PayrollImportFieldMapping() {
               {[
                 {
                   label: "Details Matching",
-                  keys: ["employee_code", "uan_number", "esic_number"],
+                  keys: ["employee_code", "uan_number", "esic_number", "monthly_ctc"],
                 },
                 {
                   label: "Attendance Details",
@@ -1234,6 +1805,7 @@ export default function PayrollImportFieldMapping() {
                       "employee_code",
                       "uan_number",
                       "esic_number",
+                      "monthly_ctc",
                       "present_days",
                       "working_days",
                       "working_hours",
@@ -1274,11 +1846,16 @@ export default function PayrollImportFieldMapping() {
                               </label>
                               <Button
                                 variant="ghost"
-                                onClick={() =>
+                                onClick={() => {
                                   setFieldConfigs((prev) =>
                                     prev.filter((f) => f.key !== field.key),
-                                  )
-                                }
+                                  );
+                                  setFieldMapping((prev) => {
+                                    const updated = { ...prev };
+                                    delete updated[field.key];
+                                    return updated;
+                                  });
+                                }}
                                 className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
                                 title="Remove"
                               >
@@ -1307,6 +1884,7 @@ export default function PayrollImportFieldMapping() {
                               "employee_code",
                               "uan_number",
                               "esic_number",
+                              "monthly_ctc",
                               "present_days",
                               "working_days",
                               "working_hours",

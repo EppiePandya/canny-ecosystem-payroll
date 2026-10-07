@@ -1,7 +1,6 @@
 import { cacheKeyPrefix } from "@/constant";
 import { clearCacheEntry, clearExactCacheEntry } from "@/utils/cache";
 import {
-  recalculateAndPersistSalaryEntriesForAttendances,
   recalculatePayrollTotals,
 } from "@canny_ecosystem/supabase/mutations";
 import { getSupabaseWithHeaders } from "@canny_ecosystem/supabase/server";
@@ -173,15 +172,6 @@ export async function action({ request, params }: ActionFunctionArgs) {
         }
       }
 
-      if (attendanceIdsToRecalculate.size > 0) {
-        await recalculateAndPersistSalaryEntriesForAttendances({
-          supabase,
-          attendanceIds: Array.from(attendanceIdsToRecalculate),
-          payrollId,
-          preserveFieldIds: savedPayrollFieldIds,
-        });
-      }
-
       await recalculatePayrollTotals({
         supabase,
         payrollId,
@@ -262,14 +252,6 @@ export async function action({ request, params }: ActionFunctionArgs) {
       }
 
       const attendanceId = salaryEntry.monthly_attendance_id;
-
-      if (attendanceId) {
-        await recalculateAndPersistSalaryEntriesForAttendances({
-          supabase,
-          attendanceIds: [attendanceId],
-          payrollId,
-        });
-      }
 
       await recalculatePayrollTotals({
         supabase,
@@ -467,19 +449,6 @@ export async function action({ request, params }: ActionFunctionArgs) {
         },
         { status: 500 },
       );
-    }
-
-    if (attendanceId) {
-      const savedPayrollFieldIds = new Set<string>();
-      if (finalPayrollFieldId) {
-        savedPayrollFieldIds.add(finalPayrollFieldId);
-      }
-      await recalculateAndPersistSalaryEntriesForAttendances({
-        supabase,
-        attendanceIds: [attendanceId],
-        payrollId,
-        preserveFieldIds: savedPayrollFieldIds,
-      });
     }
 
     await recalculatePayrollTotals({

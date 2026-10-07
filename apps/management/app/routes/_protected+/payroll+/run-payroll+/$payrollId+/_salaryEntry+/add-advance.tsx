@@ -1,7 +1,6 @@
 import { cacheKeyPrefix } from "@/constant";
 import { clearCacheEntry, clearExactCacheEntry } from "@/utils/cache";
 import {
-  recalculateAndPersistSalaryEntriesForAttendances,
   recalculatePayrollTotals,
 } from "@canny_ecosystem/supabase/mutations";
 import { getPayrollById } from "@canny_ecosystem/supabase/queries";
@@ -244,13 +243,7 @@ export async function action({ request }: ActionFunctionArgs) {
       });
     }
 
-    if (maIds.length > 0) {
-      await recalculateAndPersistSalaryEntriesForAttendances({
-        supabase,
-        attendanceIds: maIds,
-        payrollId,
-      });
-    }
+
 
     await recalculatePayrollTotals({
       supabase,

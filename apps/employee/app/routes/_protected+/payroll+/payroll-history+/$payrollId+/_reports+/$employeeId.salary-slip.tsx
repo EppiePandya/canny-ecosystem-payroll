@@ -18,6 +18,7 @@ import {
   getCompanyConfigByCompanyId,
   getEmployeeStatutoryDetailsById,
   getEmployeeWorkDetailsByEmployeeIdForOthers,
+  getLocationsByCompanyId,
   getPayrollById,
   getPrimaryLocationByCompanyId,
   getSalaryEntriesByPayrollAndEmployeeId,
@@ -30,13 +31,15 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const { companyId } = await getCompanyIdOrFirstCompany(request, supabase);
   const { data: payroll } = await getPayrollById({ payrollId, supabase });
 
+  const effectiveCompanyId = payroll?.company_id || companyId;
+
   const { data: employeeCompanyData } = await getCompanyById({
     supabase,
-    id: companyId,
+    id: effectiveCompanyId,
   });
   const { data: employeeCompanyConfig } = await getCompanyConfigByCompanyId({
     supabase,
-    companyId,
+    companyId: effectiveCompanyId,
   });
   const { data: payrollData } = await getSalaryEntriesByPayrollAndEmployeeId({
     supabase,
@@ -51,15 +54,26 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
       month: payroll?.month ?? defaultMonth,
       year: payroll?.year ?? defaultYear,
     });
-  const { data: employeeCompanyLocationData } =
-    await getPrimaryLocationByCompanyId({ supabase, companyId });
+  let { data: employeeCompanyLocationData } =
+    await getPrimaryLocationByCompanyId({ supabase, companyId: effectiveCompanyId });
+
+  if (!employeeCompanyLocationData) {
+    const { data: anyLoc } = await getLocationsByCompanyId({
+      supabase,
+      companyId: effectiveCompanyId,
+    });
+    if (anyLoc && anyLoc.length > 0) {
+      employeeCompanyLocationData = anyLoc[0];
+    }
+  }
+
   const { data: employeeStatutoryDetails } =
     await getEmployeeStatutoryDetailsById({ supabase, id: employeeId });
 
   const { data: holidayConfig } = await supabase
     .from("holiday_config")
     .select("type, multiplier, working_days, use_attendance_working_days")
-    .eq("company_id", companyId as any);
+    .eq("company_id", effectiveCompanyId as any);
 
   return {
     data: {
@@ -82,7 +96,7 @@ export default function SalarySlip() {
 
   if (!isDocument) return <div>Loading...</div>;
 
-  const { earnings, deductions, employerContributions } =
+  const { earnings, deductions, employerContributions, netPay, actualWages } =
     resolveSalarySlipBreakdown({
       salaryEntries: data?.payrollData?.salary_entries,
       attendance: {
@@ -121,6 +135,11 @@ export default function SalarySlip() {
         middle_name: data?.payrollData?.employee?.middle_name,
         last_name: data?.payrollData?.employee?.last_name,
         employee_code: data?.payrollData?.employee?.employee_code,
+        date_of_joining:
+          data?.payrollData?.employee?.work_details?.start_date ||
+          data?.payrollData?.employee?.date_of_joining ||
+          data?.employeeProjectAssignmentData?.start_date ||
+          "",
       },
 
       employeeProjectAssignmentData: {
@@ -135,12 +154,17 @@ export default function SalarySlip() {
 
       employeeStatutoryDetails: data?.employeeStatutoryDetails,
       attendance: {
-        working_days: data?.payrollData?.working_days || 0,
+        working_days: data?.payrollData?.working_days ?? 26,
+        weekly_off: 0,
+        paid_holidays: data?.payrollData?.paid_holidays ?? 0,
         paid_days:
+          data?.payrollData?.present_days ?? data?.payrollData?.paid_days ?? 0,
+        present_days:
           data?.payrollData?.present_days ?? data?.payrollData?.paid_days ?? 0,
         paid_leaves: data?.payrollData?.paid_leaves || 0,
         casual_leaves: data?.payrollData?.casual_leaves || 0,
         absents: data?.payrollData?.absent_days || 0,
+        lwp: data?.payrollData?.absent_days || 0,
         overtime_hours: data?.payrollData?.overtime_hours || 0,
       },
       bankDetails: {
@@ -153,6 +177,11 @@ export default function SalarySlip() {
       earnings,
       deductions,
       employerContributions,
+      netPay:
+        netPay ??
+        data?.payrollData?.net_pay ??
+        data?.payrollData?.net_salary,
+      actualWages: actualWages ?? data?.payrollData?.actual_wages,
     },
   };
 

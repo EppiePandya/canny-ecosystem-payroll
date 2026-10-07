@@ -321,10 +321,12 @@ export type SalaryEntriesDatabaseRow =
 export type SalaryEntriesDatabaseInsert =
   Database["public"]["Tables"]["salary_entries"]["Insert"] & {
     monthly_ctc?: number;
+    created_at?: string;
   };
 export type SalaryEntriesDatabaseUpdate =
   Database["public"]["Tables"]["salary_entries"]["Update"] & {
     monthly_ctc?: number;
+    created_at?: string;
   };
 
 // Reimbursement

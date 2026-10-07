@@ -77,20 +77,38 @@ export function calculateEmployerPfStatutoryBreakup({
     ? Math.min(epfWageBase, statutoryPf.employer_restrict_value || 15000)
     : epfWageBase;
 
-  const employerPfTotal = roundValue(employerRestrictedBase * 0.12);
+  const rawEmployerRate = Number(statutoryPf.employer_contribution) || 0.13;
+  const employerRate =
+    rawEmployerRate > 1 ? rawEmployerRate / 100 : rawEmployerRate;
 
-  const epsWage = Math.min(employerRestrictedBase, 15000);
+  // In 13% structure: 12% is core PF (split into EPS 8.33% + EPF 3.67% or configured diff) + 0.5% EDLI + 0.5% Admin
+  const employerPfTotal = roundValue(
+    employerRestrictedBase * (employerRate >= 0.13 ? 0.12 : employerRate),
+  );
+
+  const epsWage = statutoryPf.restrict_employer_contribution
+    ? Math.min(employerRestrictedBase, statutoryPf.employer_restrict_value || 15000)
+    : employerRestrictedBase;
   const epsContribution = roundValue(epsWage * 0.0833);
 
   const employerEpfShare = Math.max(employerPfTotal - epsContribution, 0);
 
-  const edliWage = Math.min(employerRestrictedBase, 15000);
+  const edliWage = statutoryPf.restrict_employer_contribution
+    ? Math.min(
+        employerRestrictedBase,
+        statutoryPf.edli_restrict_value ||
+          statutoryPf.employer_restrict_value ||
+          15000,
+      )
+    : employerRestrictedBase;
   const edliContribution = roundValue(edliWage * 0.005);
 
   const epfAdminContribution = roundValue(employerRestrictedBase * 0.005);
 
   const totalPfLiability =
-    employerPfTotal + edliContribution + epfAdminContribution;
+    employerRate >= 0.13
+      ? roundValue(employerRestrictedBase * employerRate)
+      : employerPfTotal + edliContribution + epfAdminContribution;
 
   return {
     pfTotal: totalPfLiability,

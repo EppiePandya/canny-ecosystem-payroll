@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLoaderData, useNavigate } from "@remix-run/react";
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { useIsDocument } from "@canny_ecosystem/utils/hooks/is-document";
@@ -9,6 +9,7 @@ import { getCompanyIdOrFirstCompany } from "@/utils/server/company.server";
 import {
   getCompanyById,
   getCompanyConfigByCompanyId,
+  getLocationsByCompanyId,
   getPayrollById,
   getPrimaryLocationByCompanyId,
   getSalaryEntriesForSalaryRegisterAndAll,
@@ -85,21 +86,33 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     supabase,
   });
 
+  const effectiveCompanyId = payroll?.company_id || companyId;
+
   const { data: employeeCompanyData } = await getCompanyById({
     supabase,
-    id: companyId,
+    id: effectiveCompanyId,
   });
 
   const { data: employeeCompanyConfig } = await getCompanyConfigByCompanyId({
     supabase,
-    companyId,
+    companyId: effectiveCompanyId,
   });
 
-  const { data: employeesCompanyLocationData } =
+  const { data: primaryLoc } =
     await getPrimaryLocationByCompanyId({
       supabase,
-      companyId,
+      companyId: effectiveCompanyId,
     });
+  let employeesCompanyLocationData = primaryLoc;
+  if (!employeesCompanyLocationData) {
+    const { data: anyLoc } = await getLocationsByCompanyId({
+      supabase,
+      companyId: effectiveCompanyId,
+    });
+    if (anyLoc && anyLoc.length > 0) {
+      employeesCompanyLocationData = anyLoc[0];
+    }
+  }
 
   const { data: payrollDataAndOthers } =
     await getSalaryEntriesForSalaryRegisterAndAll({
@@ -112,7 +125,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const { data: holidayConfig } = await supabase
     .from("holiday_config")
     .select("type, multiplier, working_days, use_attendance_working_days")
-    .eq("company_id", companyId as any);
+    .eq("company_id", effectiveCompanyId as any);
 
   return {
     data: {
@@ -133,18 +146,38 @@ export default function SalarySlips() {
   const navigate = useNavigate();
   const { isDocument } = useIsDocument();
 
+  useEffect(() => {
+    if (selectedRows && selectedRows.length > 0) {
+      const isStale = selectedRows.some(
+        (row: any) => row.payroll_id && row.payroll_id !== payrollId,
+      );
+      if (isStale) {
+        useSalaryEntriesStore.getState().setSelectedRows([]);
+        useSalaryEntriesStore.getState().setRowSelection({});
+      }
+    }
+  }, [payrollId, selectedRows]);
+
   const selectedMap = new Map<string, any>();
   selectedRows.forEach((row: any) => {
+    if (row.payroll_id && row.payroll_id !== payrollId) return;
     const empId = row.employee?.id || row.employee_id;
     if (empId) {
       selectedMap.set(empId, row);
     }
   });
 
+  const hasMatchingSelectedRows = (data?.payrollDataAndOthers || []).some(
+    (emp: any) => {
+      const empId = emp.employee?.id || emp.employee_id;
+      return selectedMap.has(empId);
+    },
+  );
+
   const filteredPayrollData = (data?.payrollDataAndOthers || []).filter(
     (emp: any) => {
       const empId = emp.employee?.id || emp.employee_id;
-      if (selectedMap.size > 0 && !selectedMap.has(empId)) return false;
+      if (hasMatchingSelectedRows && !selectedMap.has(empId)) return false;
       return true;
     },
   );
@@ -199,7 +232,7 @@ export default function SalarySlips() {
 
     const employeeData: any[] = (data.payrollDataAndOthers || []).map(
       (emp: any) => {
-        const { earnings, deductions, employerContributions } =
+        const { earnings, deductions, employerContributions, netPay, actualWages } =
           resolveSalarySlipBreakdown({
             salaryEntries: emp.salary_entries,
             attendance: {
@@ -225,6 +258,10 @@ export default function SalarySlips() {
             middle_name: emp?.employee?.middle_name,
             last_name: emp?.employee?.last_name,
             employee_code: emp?.employee?.employee_code,
+            date_of_joining:
+              emp?.employee?.work_details?.start_date ||
+              emp?.employee?.date_of_joining ||
+              "",
           },
           employeeProjectAssignmentData: {
             position: emp?.employee?.work_details?.position || "",
@@ -258,13 +295,15 @@ export default function SalarySlips() {
               emp.employee?.employee_statutory_details?.pan_number || "",
           },
           attendance: {
-            working_days: emp?.working_days ?? 0,
-            weekly_off: 5,
+            working_days: emp?.working_days ?? 26,
+            weekly_off: 0,
             paid_holidays: emp?.paid_holidays ?? 0,
             paid_days: emp?.present_days ?? emp?.paid_days ?? 0,
+            present_days: emp?.present_days ?? emp?.paid_days ?? 0,
             paid_leaves: emp?.paid_leaves ?? 0,
             casual_leaves: emp?.casual_leaves ?? 0,
             absents: emp?.absent_days ?? 0,
+            lwp: emp?.absent_days ?? 0,
             overtime_hours: emp?.overtime_hours ?? 0,
           },
           bankDetails: {
@@ -274,6 +313,8 @@ export default function SalarySlips() {
           earnings,
           deductions,
           employerContributions,
+          netPay: netPay ?? emp?.net_pay ?? emp?.net_salary,
+          actualWages: actualWages ?? emp?.actual_wages,
         };
       },
     );

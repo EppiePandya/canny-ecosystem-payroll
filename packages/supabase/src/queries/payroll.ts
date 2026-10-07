@@ -66,7 +66,7 @@ export async function getPendingOrSubmittedPayrollsByCompanyId({
 
   let query = supabase
     .from("payroll")
-    .select(columns.join(","), { count: "exact" })
+    .select(`${columns.join(",")}, salary_entries(count)`, { count: "exact" })
     .eq("company_id", companyId)
     .order("created_at", { ascending: false })
     .in("status", ["pending", "submitted"]);
@@ -109,7 +109,19 @@ export async function getPendingOrSubmittedPayrollsByCompanyId({
   if (error)
     console.error("getPendingOrSubmittedPayrollsByCompanyId Error", error);
 
-  return { data, meta: { count: count }, error };
+  const mappedData = data?.map((p: any) => {
+    const actualCount =
+      Array.isArray(p.salary_entries) && p.salary_entries[0] !== undefined
+        ? Number(p.salary_entries[0].count)
+        : p.total_employees;
+
+    return {
+      ...p,
+      total_employees: actualCount,
+    };
+  });
+
+  return { data: mappedData, meta: { count: count }, error };
 }
 
 export async function getApprovedPayrollsByCompanyId({
@@ -143,7 +155,7 @@ export async function getApprovedPayrollsByCompanyId({
 
   let query = supabase
     .from("payroll")
-    .select(columns.join(","), { count: "exact" })
+    .select(`${columns.join(",")}, salary_entries(count)`, { count: "exact" })
     .eq("company_id", companyId)
     .order("created_at", { ascending: false })
     .in("status", ["approved"]);
@@ -182,7 +194,20 @@ export async function getApprovedPayrollsByCompanyId({
 
   const { data, count, error } = await query.range(from, to);
   if (error) console.error("getApprovedPayrollsByCompanyId Error", error);
-  return { data, meta: { count: count }, error };
+
+  const mappedData = data?.map((p: any) => {
+    const actualCount =
+      Array.isArray(p.salary_entries) && p.salary_entries[0] !== undefined
+        ? Number(p.salary_entries[0].count)
+        : p.total_employees;
+
+    return {
+      ...p,
+      total_employees: actualCount,
+    };
+  });
+
+  return { data: mappedData, meta: { count: count }, error };
 }
 
 export async function getPayrollById({
@@ -211,13 +236,26 @@ export async function getPayrollById({
 
   const { data, error } = await supabase
     .from("payroll")
-    .select(`${columns.join(",")},sites(name),projects(name)`)
+    .select(`${columns.join(",")},sites(name),projects(name),salary_entries(count)`)
     .eq("id", payrollId)
-    .maybeSingle<InferredType<PayrollDatabaseRow, (typeof columns)[number]>>();
+    .maybeSingle<any>();
 
   if (error) console.error("getPayrollById Error", error);
 
-  return { data, error };
+  const actualCount =
+    Array.isArray((data as any)?.salary_entries) &&
+    (data as any).salary_entries[0] !== undefined
+      ? Number((data as any).salary_entries[0].count)
+      : data?.total_employees;
+
+  const resultData = data
+    ? {
+        ...data,
+        total_employees: actualCount,
+      }
+    : null;
+
+  return { data: resultData as any, error };
 }
 
 export type PayrollField = {
@@ -406,9 +444,16 @@ export const getSalaryEntriesByPayrollId = async ({
           )
         ),
         ${statutoryJoin} (
+          aadhaar_number,
+          pan_number,
           uan_number,
+          pf_number,
           esic_number,
           esic_id
+        ),
+        employee_bank_details!left (
+          account_number,
+          bank_name
         ),
         employee_salary_assignment (
           *,
@@ -448,8 +493,9 @@ export const getSalaryEntriesByPayrollId = async ({
         )
       ),
 
-      salary_entries (
+      salary_entries!inner (
         id,
+        created_at,
         payroll_id,
         monthly_ctc,
         invoice_id,
@@ -484,8 +530,9 @@ export const getSalaryEntriesByPayrollId = async ({
     )
     .eq("month", month)
     .eq("year", year)
-    .eq("employees.company_id", companyId)
-    .lte("employees.work_details.start_date", endOfMonth);
+    .eq("employees.company_id", payroll?.company_id || companyId)
+    .lte("employees.work_details.start_date", endOfMonth)
+    .eq("salary_entries.payroll_id", payrollId);
 
   if (attendanceId) {
     query = query.eq("id", attendanceId);
@@ -540,10 +587,10 @@ export const getSalaryEntriesByPayrollId = async ({
     } else if (validAttendanceSortColumns.has(sortField)) {
       query = query.order(sortField, { ascending: sortOrder === "asc" });
     } else {
-      query = query.order("id", { ascending: true });
+      query = query.order("created_at", { ascending: true });
     }
   } else {
-    query = query.order("id", { ascending: true });
+    query = query.order("created_at", { ascending: true });
   }
 
   if (payroll?.site_id && (!siteIds || siteIds.length === 0)) {
@@ -624,6 +671,11 @@ export const getSalaryEntriesByPayrollId = async ({
             ? att.employees.employee_statutory_details[0]
             : att.employees.employee_statutory_details
           : null,
+        employee_bank_details: att.employees?.employee_bank_details
+          ? Array.isArray(att.employees.employee_bank_details)
+            ? att.employees.employee_bank_details[0]
+            : att.employees.employee_bank_details
+          : null,
       },
       salary_entries: salaryEntries,
     };
@@ -637,6 +689,18 @@ export const getSalaryEntriesByPayrollId = async ({
     }
   }
   const deduplicatedMergedData = Array.from(uniqueMergedMap.values());
+
+  if (!sortField) {
+    deduplicatedMergedData.sort((a, b) => {
+      const timeA = new Date(
+        (a as any).salary_entries?.created_at || (a as any).created_at || 0,
+      ).getTime();
+      const timeB = new Date(
+        (b as any).salary_entries?.created_at || (b as any).created_at || 0,
+      ).getTime();
+      return timeA - timeB;
+    });
+  }
 
   return {
     data: deduplicatedMergedData,
@@ -974,196 +1038,26 @@ export async function getSalaryEntriesForSalaryRegisterAndAll({
   month: number;
   year: number;
 }) {
-  const endOfMonth = new Date(year, month, 0).toISOString().slice(0, 10);
+  const { data: payroll } = await getPayrollById({ supabase, payrollId });
+  const payrollMonth = payroll?.month ?? month;
+  const payrollYear = payroll?.year ?? year;
+  const companyId = payroll?.company_id ?? "";
 
-  const { data: attendanceData, error: attendanceError } = await supabase
-    .from("monthly_attendance")
-    .select(
-      `
-      id,
-      month,
-      year,
-      present_days,
-      overtime_hours,
-      working_days,
-      working_hours,
-      paid_holidays,
-      paid_leaves,
-      casual_leaves,
-      absent_days,
-      employee_id,
-      salary_entries!inner (
-        monthly_ctc,
-        salary_field_values!inner (
-          amount,
-          consider_for_epf,
-          payroll_fields!inner (
-            name,
-            type
-          )
-        )
-      )
-    `,
-    )
-    .eq("salary_entries.payroll_id", payrollId)
-    .limit(SOFT_QUERY_LIMIT);
-  if (attendanceError) return { data: null, error: attendanceError };
-
-  const employeeIds = attendanceData.map((a) => a.employee_id);
-
-  const { data: employees, error: employeeError } = await supabase
-    .from("employees")
-    .select(
-      `
-      id,
-      company_id,
-      first_name,
-      middle_name,
-      last_name,
-      employee_code,
-      employee_statutory_details!left (
-        aadhaar_number,
-        pan_number,
-        uan_number,
-        pf_number,
-        esic_number
-      ),
-      employee_bank_details!left (
-        account_number,
-        bank_name
-      ),
-      employee_salary_assignment (
-        *,
-        employee_salary_components (
-          *,
-          payment_fields (*)
-        ),
-        employee_salary_statutory_components (
-          pf:employee_provident_fund (*),
-          esi:employee_state_insurance (*),
-          pt:professional_tax (*),
-          bonus:statutory_bonus (*),
-          lwf:labour_welfare_fund (*)
-        ),
-        payment_templates (
-          id,
-          name,
-          payment_template_versions (
-            id,
-            effective_date,
-            monthly_ctc,
-            basic_percent,
-            is_pro_rata,
-            payment_template_components (
-              *,
-              payment_fields (*)
-            ),
-            payment_statutory_components (
-              pf:employee_provident_fund (*),
-              esi:employee_state_insurance (*),
-              pt:professional_tax (*),
-              bonus:statutory_bonus (*),
-              lwf:labour_welfare_fund (*)
-            )
-          )
-        )
-      )
-    `,
-    )
-    .in("id", employeeIds);
-
-  if (employeeError) {
-    console.error(
-      "getSalaryEntriesForSalaryRegisterAndAll employees error:",
-      employeeError,
-    );
-    return { data: null, error: employeeError };
-  }
-
-  const workDetailsMap: Record<string, any> = {};
-  for (const empId of employeeIds) {
-    const { data: wd, error: wdError } = await supabase
-      .from("work_details")
-      .select(
-        `
-        employee_id,
-        position,
-        site_id,
-        project_id,
-        department_id,
-        start_date,
-        end_date,
-        project:projects!left(name),
-        site:sites (
-          id,
-          name,
-          address_line_1,
-          address_line_2,
-          city,
-          state,
-          pincode,
-          company_locations!left(name,address_line_1,address_line_2,city,state,pincode)
-        ),
-        department:departments (
-          id,
-          name,
-          sites!left(name)
-        )
-      `,
-      )
-      .eq("employee_id", empId)
-      .lte("start_date", endOfMonth)
-      .order("start_date", { ascending: false })
-      .limit(SINGLE_QUERY_LIMIT)
-      .maybeSingle();
-
-    if (wdError) return { data: null, error: wdError };
-    workDetailsMap[empId] = wd || null;
-  }
-
-  const today = new Date();
-  const mergedData = attendanceData.map((att) => {
-    const rawEmployee: any = employees.find((e) => e.id === att.employee_id);
-    const workDetail = workDetailsMap[att.employee_id];
-
-    let salaryAssignment: any = null;
-    if (rawEmployee) {
-      const rawAssignments = rawEmployee.employee_salary_assignment || [];
-      const assignmentList = Array.isArray(rawAssignments)
-        ? rawAssignments
-        : rawAssignments
-          ? [rawAssignments]
-          : [];
-      const validAssignments = assignmentList
-        .filter(
-          (a: any) => !a.effective_date || new Date(a.effective_date) <= today,
-        )
-        .sort(
-          (a: any, b: any) =>
-            new Date(b.effective_date || 0).getTime() -
-            new Date(a.effective_date || 0).getTime(),
-        );
-      salaryAssignment = validAssignments[0] || assignmentList[0] || null;
-    }
-
-    const rawSalaryEntries = att.salary_entries;
-    const salaryEntry = Array.isArray(rawSalaryEntries)
-      ? rawSalaryEntries[0]
-      : rawSalaryEntries;
-
-    return {
-      ...att,
-      salary_entries: salaryEntry,
-      employee: rawEmployee
-        ? {
-            ...rawEmployee,
-            work_details: workDetail,
-            salary_assignment: salaryAssignment,
-          }
-        : null,
-    };
+  const { data: entries, error } = await getSalaryEntriesByPayrollId({
+    supabase,
+    payrollId,
+    month: payrollMonth,
+    year: payrollYear,
+    companyId,
+    limit: 10000,
   });
-  return { data: mergedData, error: null };
+
+  if (error) {
+    console.error("getSalaryEntriesForSalaryRegisterAndAll error:", error);
+    return { data: null, error };
+  }
+
+  return { data: entries || [], error: null };
 }
 
 export async function getSalaryEntriesByEmployeeId({

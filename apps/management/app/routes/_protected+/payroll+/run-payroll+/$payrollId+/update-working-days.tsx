@@ -1,7 +1,6 @@
 import { json, type ActionFunctionArgs } from "@remix-run/node";
 import { getSupabaseWithHeaders } from "@canny_ecosystem/supabase/server";
 import {
-  recalculateAndPersistSalaryEntriesForAttendances,
   recalculatePayrollTotals,
   updateWorkingDaysBulk,
 } from "@canny_ecosystem/supabase/mutations";
@@ -42,12 +41,6 @@ export async function action({ request, params }: ActionFunctionArgs) {
     });
 
     if (result.success && result.attendanceIds?.length) {
-      await recalculateAndPersistSalaryEntriesForAttendances({
-        supabase,
-        attendanceIds: result.attendanceIds,
-        payrollId,
-      });
-
       await recalculatePayrollTotals({
         supabase,
         payrollId,

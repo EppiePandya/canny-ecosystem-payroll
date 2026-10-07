@@ -259,7 +259,9 @@ export async function createAttendanceByPayrollImportAndGiveID({
   for (const key in insertData) {
     const val = (insertData as any)[key];
     if (val !== undefined && val !== null) {
-      if (typeof val === "string") {
+      if (key === "created_at") {
+        cleanInsertData[key] = val;
+      } else if (typeof val === "string") {
         const num = Number.parseFloat(val);
         cleanInsertData[key] = Number.isNaN(num) ? val : num;
       } else {
