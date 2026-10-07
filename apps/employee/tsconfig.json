@@ -1,6 +1,7 @@
 {
   "extends": "@canny_ecosystem/typescript/remix.json",
   "compilerOptions": {
+    "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
       "@/*": ["./app/*"]

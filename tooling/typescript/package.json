@@ -1,4 +1,14 @@
 {
   "name": "@canny_ecosystem/typescript",
-  "private": true
+  "private": true,
+  "files": [
+    "base.json",
+    "remix.json"
+  ],
+  "exports": {
+    "./base.json": "./base.json",
+    "./remix.json": "./remix.json",
+    "./*": "./*"
+  }
 }
+
