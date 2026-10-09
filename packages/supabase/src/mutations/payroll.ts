@@ -781,15 +781,6 @@ export async function recalculatePayrollTotals({
           }
         }
       }
-
-      if (
-        totalNetAmount === 1016790 ||
-        totalNetAmount === 1016789 ||
-        payrollId === "b69436f4-16d0-4afb-8448-7066442a2fe5" ||
-        payrollId === "b4013d40-00a8-4af5-89f1-7d87eec85898"
-      ) {
-        totalNetAmount = 1016787;
-      }
     }
 
     // 3. Update the payroll record

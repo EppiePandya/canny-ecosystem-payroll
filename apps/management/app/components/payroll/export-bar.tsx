@@ -6282,18 +6282,6 @@ export function ExportBar({
     (site) => site !== "All Sites",
   );
 
-  const displayedTotalNet = useMemo(() => {
-    if (
-      totalNet === 1016790 ||
-      totalNet === 1016789 ||
-      payrollData?.id === "b69436f4-16d0-4afb-8448-7066442a2fe5" ||
-      payrollData?.id === "b4013d40-00a8-4af5-89f1-7d87eec85898"
-    ) {
-      return 1016787;
-    }
-    return totalNet;
-  }, [totalNet, payrollData?.id]);
-
   return (
     <div
       className={cn(
@@ -6314,7 +6302,7 @@ export function ExportBar({
         <p className="font-semibold">{rows} Employee Selected</p>
       </div>
       <div className="h-full tracking-wide font-medium rounded-full hidden md:flex justify-between items-center px-6 border dark:border-muted-foreground/30 ">
-        Net Pay: <span className="ml-1.5">{displayedTotalNet}</span>
+        Net Pay: <span className="ml-1.5">{totalNet}</span>
       </div>
       <div className="h-full flex justify-center items-center gap-4">
         <Button

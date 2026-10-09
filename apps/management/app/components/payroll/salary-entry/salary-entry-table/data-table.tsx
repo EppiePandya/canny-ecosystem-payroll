@@ -448,19 +448,7 @@ export function SalaryEntryDataTable<TData, TValue>({
           setRowSelection({});
           setSelectedRows([]);
         }}
-        totalNet={
-          (selectedRows.length === totalCount ||
-            selectedRows.length === (data as any[])?.length ||
-            (totalCount > 0 && selectedRows.length >= totalCount)) &&
-          payrollData?.total_net_amount
-            ? payrollData.total_net_amount
-            : roundToNearest(selectedRowsTotalNet) === 1016790 ||
-                roundToNearest(selectedRowsTotalNet) === 1016789 ||
-                payrollData?.id === "b69436f4-16d0-4afb-8448-7066442a2fe5" ||
-                payrollData?.id === "b4013d40-00a8-4af5-89f1-7d87eec85898"
-              ? 1016787
-              : roundToNearest(selectedRowsTotalNet)
-        }
+        totalNet={roundToNearest(selectedRowsTotalNet)}
         className={cn(!selectedRows.length && "hidden")}
         rows={selectedRows.length}
         data={selectedRows as SalaryEntriesDatabaseRow[]}
