@@ -17,7 +17,10 @@ import { LoadingSpinner } from "@/components/loading-spinner";
 
 import { useState, useEffect, useMemo } from "react";
 import { ImportedDataTable } from "../salary-imported-table/imported-data-table";
-import { ImportedDataColumns } from "../salary-imported-table/columns";
+import {
+  ImportedDataColumns,
+  sortPayrollFieldConfigs,
+} from "../salary-imported-table/columns";
 import type { FieldConfig } from "@/routes/_protected+/payroll+/run-payroll+/import-salary-payroll+/_index";
 import { CreateUnmatchedEmployeePanel } from "@/components/employees/import-export/create-unmatched-employee-panel";
 import { Dialog, DialogContent } from "@canny_ecosystem/ui/dialog";
@@ -707,8 +710,8 @@ export function SalaryPayrollImportData({
 
       <ImportedDataTable
         data={tableData}
-        columns={ImportedDataColumns(fieldConfigs)}
-        fieldConfigs={fieldConfigs}
+        columns={ImportedDataColumns(sortPayrollFieldConfigs(fieldConfigs))}
+        fieldConfigs={sortPayrollFieldConfigs(fieldConfigs)}
       />
 
       {showUnmatchedView && unmatchedEmployees.length > 0 && (

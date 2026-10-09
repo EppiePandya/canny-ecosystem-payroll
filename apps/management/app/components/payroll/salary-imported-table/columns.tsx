@@ -8,6 +8,53 @@ import { ImportedSalaryPayrollOptionsDropdown } from "./imported-table-options";
 import type { FieldConfig } from "@/routes/_protected+/payroll+/run-payroll+/import-salary-payroll+/_index";
 import { replaceUnderscore } from "@canny_ecosystem/utils";
 
+export const isTotalDeductionsField = (key: string) => {
+  const norm = String(key || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  return (
+    norm === "totaldeductions" ||
+    norm === "totaldeduction" ||
+    norm === "totalded" ||
+    norm === "totded" ||
+    norm === "totdeductions" ||
+    norm === "totaldeductionamount"
+  );
+};
+
+export const isNetPayField = (key: string) => {
+  const norm = String(key || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  return (
+    norm === "netpay" ||
+    norm === "netsalary" ||
+    norm === "netamount" ||
+    norm === "netpayable" ||
+    norm === "net"
+  );
+};
+
+export function sortPayrollFieldConfigs<T extends { key: string }>(
+  configs: T[],
+): T[] {
+  const normalFields: T[] = [];
+  const totalDeductionsFields: T[] = [];
+  const netPayFields: T[] = [];
+
+  for (const config of configs) {
+    if (isTotalDeductionsField(config.key)) {
+      totalDeductionsFields.push(config);
+    } else if (isNetPayField(config.key)) {
+      netPayFields.push(config);
+    } else {
+      normalFields.push(config);
+    }
+  }
+
+  return [...normalFields, ...totalDeductionsFields, ...netPayFields];
+}
+
 const getHighlightKey = (rowOriginal: any, fieldConfigs: FieldConfig[]) => {
   const hasCode =
     fieldConfigs.some((f) => f.key === "employee_code") &&
@@ -23,21 +70,24 @@ const getHighlightKey = (rowOriginal: any, fieldConfigs: FieldConfig[]) => {
 
 export const ImportedDataColumns = (
   fieldConfigs: FieldConfig[],
-): ColumnDef<any>[] => [
-  {
-    accessorKey: "sr_no",
-    header: "Sr No.",
-    cell: ({ row }) => {
-      return <p className="truncate ">{row.index + 1}</p>;
+): ColumnDef<any>[] => {
+  const sortedFieldConfigs = sortPayrollFieldConfigs(fieldConfigs);
+
+  return [
+    {
+      accessorKey: "sr_no",
+      header: "Sr No.",
+      cell: ({ row }) => {
+        return <p className="truncate ">{row.index + 1}</p>;
+      },
     },
-  },
-  ...fieldConfigs.map((field) => ({
-    accessorKey: field.key,
-    header: replaceUnderscore(field.key) ?? "",
-    cell: ({ row }: { row: { original: any } }) => {
-      const key = field.key;
-      const isNewEmployee = row.original?.is_new_employee;
-      const highlightKey = getHighlightKey(row.original, fieldConfigs);
+    ...sortedFieldConfigs.map((field) => ({
+      accessorKey: field.key,
+      header: replaceUnderscore(field.key) ?? "",
+      cell: ({ row }: { row: { original: any } }) => {
+        const key = field.key;
+        const isNewEmployee = row.original?.is_new_employee;
+        const highlightKey = getHighlightKey(row.original, sortedFieldConfigs);
       const shouldHighlight = isNewEmployee && key === highlightKey;
 
       const value: any = row.original?.[key as keyof any];
@@ -99,3 +149,4 @@ export const ImportedDataColumns = (
     },
   },
 ];
+};

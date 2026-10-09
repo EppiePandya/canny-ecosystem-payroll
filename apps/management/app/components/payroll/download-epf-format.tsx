@@ -18,6 +18,10 @@ import {
   calculateEmployerPfStatutoryBreakup,
   formatDateTime,
   roundToNearest,
+  EMPLOYEE_EPF_PERCENTAGE,
+  EMPLOYEE_RESTRICTED_VALUE,
+  EMPLOYER_RESTRICTED_VALUE,
+  EDLI_RESTRICTED_VALUE,
 } from "@canny_ecosystem/utils";
 import type {
   SupabaseEnv,
@@ -44,7 +48,6 @@ export const prepareEpfFormat = async ({
   data,
   supabase,
   selectedEpf,
-  selectedEpfFields,
 }: {
   data: any[];
   supabase: TypedSupabaseClient;
@@ -65,8 +68,9 @@ export const prepareEpfFormat = async ({
   const attendanceDate = new Date();
   attendanceDate.setMonth(attendanceDate.getMonth() - 1);
 
-  // 1. Employee EPF settings
-  const rawEmpContrib = Number(selectedEpf?.employee_contribution) || 0.12;
+  // 1. Employee EPF settings fetched from selectedEpf configuration
+  const rawEmpContrib =
+    Number(selectedEpf?.employee_contribution) || EMPLOYEE_EPF_PERCENTAGE;
   const employeeContributionRate =
     rawEmpContrib > 1 ? rawEmpContrib / 100 : rawEmpContrib;
 
@@ -74,26 +78,19 @@ export const prepareEpfFormat = async ({
     ? selectedEpf.restrict_employee_contribution === true
     : false;
   const employeeRestrictValue = selectedEpf
-    ? Number(selectedEpf.employee_restrict_value) || 15000
-    : 15000;
+    ? Number(selectedEpf.employee_restrict_value) || EMPLOYEE_RESTRICTED_VALUE
+    : EMPLOYEE_RESTRICTED_VALUE;
 
-  // 2. Employer EPF settings (e.g. 13% total: 4.67% EPF + 8.33% EPS)
-  const rawEmployerContrib = Number(selectedEpf?.employer_contribution) || 0.13;
-  const employerContributionRate =
-    rawEmployerContrib > 1 ? rawEmployerContrib / 100 : rawEmployerContrib;
-
+  // 2. Employer EPF settings fetched from selectedEpf configuration
   const isEmployerRestricted = selectedEpf
     ? selectedEpf.restrict_employer_contribution === true
     : false;
   const employerRestrictValue = selectedEpf
-    ? Number(selectedEpf.employer_restrict_value) || 15000
-    : 15000;
+    ? Number(selectedEpf.employer_restrict_value) || EMPLOYER_RESTRICTED_VALUE
+    : EMPLOYER_RESTRICTED_VALUE;
   const edliRestrictValue = selectedEpf
     ? Number(selectedEpf.edli_restrict_value) || employerRestrictValue
-    : 15000;
-
-  // Statutory EPS rate is 8.33%
-  const epsRate = 0.0833;
+    : EDLI_RESTRICTED_VALUE;
 
   const extractedData = updatedData.map((formatData) => {
     const pfDeduction = Number(formatData?.pfAmount) || 0;
@@ -109,7 +106,7 @@ export const prepareEpfFormat = async ({
         Math.abs(roundToNearest(epfWageBase * employeeContributionRate) - pfDeduction) > 5
       ) {
         epfWageBase = roundToNearest(
-          pfDeduction / (employeeContributionRate || 0.12),
+          pfDeduction / (employeeContributionRate || EMPLOYEE_EPF_PERCENTAGE),
         );
       }
     } else if (baseAmount > 0) {
@@ -124,11 +121,6 @@ export const prepareEpfFormat = async ({
       epfWageBase = employeeRestrictValue;
     }
 
-    // Employer wage base and statutory ceilings (respected if restriction is enabled)
-    const employerWageBase = isEmployerRestricted
-      ? Math.min(epfWageBase, employerRestrictValue)
-      : epfWageBase;
-
     const epsWages = isEmployerRestricted
       ? Math.min(roundToNearest(epfWageBase), employerRestrictValue)
       : roundToNearest(epfWageBase);
@@ -137,19 +129,14 @@ export const prepareEpfFormat = async ({
       ? Math.min(roundToNearest(epfWageBase), edliRestrictValue)
       : roundToNearest(epfWageBase);
 
-    // EPS share (Pension) - Column 8
-    const epsContribution =
-      epfContribution > 0 ? roundToNearest(epsWages * epsRate) : 0;
+    // Calculate employer statutory breakup dynamically from selectedEpf
+    const employerBreakup = calculateEmployerPfStatutoryBreakup({
+      epfWageBase,
+      statutoryPf: selectedEpf,
+    });
 
-    // ER share (Employer EPF Share) - Column 9
-    // Matches employer contribution policy (e.g. 13% total: 4.67% EPF + 8.33% EPS)
-    let diffEpf_Eps = 0;
-    if (epfContribution > 0) {
-      const totalEmployerPf = roundToNearest(
-        employerWageBase * employerContributionRate,
-      );
-      diffEpf_Eps = Math.max(0, totalEmployerPf - epsContribution);
-    }
+    const epsContribution = epfContribution > 0 ? employerBreakup.eps : 0;
+    const diffEpf_Eps = epfContribution > 0 ? employerBreakup.employerEpf : 0;
 
     return {
       uan_number: formatData?.statutoryDetails?.uan_number || null,
@@ -167,8 +154,8 @@ export const prepareEpfFormat = async ({
       epf_contribution: epfContribution,
       eps_contribution: epsContribution,
       diffEpf_Eps: diffEpf_Eps,
+      ncp_days: Number(formatData?.absentDays || 0),
       refund: 0,
-      ncp_days: formatData.absentDays,
     };
   });
 
@@ -261,11 +248,11 @@ export const DownloadEpfFormat = ({
 
       const employeeContribution = selectedEpf
         ? selectedEpf.employee_contribution
-        : 0.12;
+        : EMPLOYEE_EPF_PERCENTAGE;
 
       const employeeRestrictValue = selectedEpf
         ? selectedEpf.employee_restrict_value
-        : 15000;
+        : EMPLOYEE_RESTRICTED_VALUE;
 
       const cleanUpper = (s: string) =>
         String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -338,6 +325,19 @@ export const DownloadEpfFormat = ({
           .reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0),
       );
 
+      const workingDays = Number(emp?.working_days || 0);
+      const presentDays = Number(emp?.present_days || 0);
+      const paidLeaves = Number(emp?.paid_leaves || 0);
+      const casualLeaves = Number(emp?.casual_leaves || 0);
+      const paidHolidays = Number(emp?.paid_holidays || 0);
+      const totalPaidDays =
+        presentDays + paidLeaves + casualLeaves + paidHolidays;
+
+      let absentDays = Number(emp?.absent_days || 0);
+      if (absentDays === 0 && workingDays > 0 && totalPaidDays < workingDays) {
+        absentDays = Math.max(0, workingDays - totalPaidDays);
+      }
+
       return {
         amount: earnings,
         pfAmount,
@@ -345,9 +345,9 @@ export const DownloadEpfFormat = ({
         isRestricted,
         employeeContribution,
         employeeRestrictValue,
-        presentDays: emp?.present_days ?? 0,
-        workingDays: emp?.working_days ?? 0,
-        absentDays: emp?.absent_days ?? 0,
+        presentDays,
+        workingDays,
+        absentDays,
         employee_id: emp?.employee?.id,
         employees: {
           employee_code: emp.employee?.employee_code,
@@ -381,7 +381,10 @@ export const DownloadEpfFormat = ({
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
     link.href = url;
-    link.setAttribute("download", `Epf-Format - ${formatDateTime(Date.now())}`);
+    link.setAttribute(
+      "download",
+      `Epf-Format - ${formatDateTime(Date.now())}.txt`,
+    );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

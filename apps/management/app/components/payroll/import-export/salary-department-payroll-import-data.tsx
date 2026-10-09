@@ -16,7 +16,10 @@ import { LoadingSpinner } from "@/components/loading-spinner";
 
 import { useState, useEffect } from "react";
 import { ImportedDataTable } from "../salary-imported-table/imported-data-table";
-import { ImportedDataColumns } from "../salary-imported-table/columns";
+import {
+  ImportedDataColumns,
+  sortPayrollFieldConfigs,
+} from "../salary-imported-table/columns";
 import type { FieldConfig } from "@/routes/_protected+/payroll+/run-payroll+/import-salary-payroll+/_index";
 
 export function SalaryDepartmentPayrollImportData({
@@ -193,8 +196,8 @@ export function SalaryDepartmentPayrollImportData({
 
       <ImportedDataTable
         data={tableData}
-        columns={ImportedDataColumns(fieldConfigs)}
-        fieldConfigs={fieldConfigs}
+        columns={ImportedDataColumns(sortPayrollFieldConfigs(fieldConfigs))}
+        fieldConfigs={sortPayrollFieldConfigs(fieldConfigs)}
       />
     </section>
   );

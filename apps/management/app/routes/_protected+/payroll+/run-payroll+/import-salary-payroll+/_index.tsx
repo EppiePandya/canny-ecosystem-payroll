@@ -44,6 +44,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { getSupabaseWithHeaders } from "@canny_ecosystem/supabase/server";
 import { getCompanyIdOrFirstCompany } from "@/utils/server/company.server";
 import { suggestFieldMapping } from "@/utils/ai/import-mapping";
+import { sortPayrollFieldConfigs } from "@/components/payroll/salary-imported-table/columns";
 
 export type FieldConfig = {
   key: string;
@@ -82,14 +83,14 @@ const DEFAULT_PAYMENT_FIELDS = [
   { name: "OVERTIME", display_name: "OVERTIME", type: "earning" },
   { name: "OVERTIME_AMOUNT", display_name: "OVERTIME AMOUNT", type: "earning" },
   { name: "ACTUAL_WAGES", display_name: "ACTUAL WAGES", type: "earning" },
-  { name: "NET_PAY", display_name: "NET PAY", type: "earning" },
-  { name: "TOTAL_DEDUCTIONS", display_name: "TOTAL DEDUCTIONS", type: "deduction" },
   { name: "PF", display_name: "PF", type: "deduction" },
   { name: "ESI", display_name: "ESI", type: "deduction" },
   { name: "PT", display_name: "PT", type: "deduction" },
   { name: "LWF", display_name: "LWF", type: "deduction" },
   { name: "ADVANCE", display_name: "ADVANCE", type: "deduction" },
   { name: "TDS", display_name: "TDS", type: "deduction" },
+  { name: "TOTAL_DEDUCTIONS", display_name: "TOTAL DEDUCTIONS", type: "deduction" },
+  { name: "NET_PAY", display_name: "NET PAY", type: "earning" },
 ];
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -609,23 +610,6 @@ export function autoDetectPayrollMappings({
         n === "wages",
     },
     {
-      key: "NET_PAY",
-      altKey: "NET_SALARY",
-      defaultType: "earning",
-      test: (n) =>
-        n === "net" ||
-        /^net(\s*(pay|salary|amount|wages?|payable))?$/i.test(n) ||
-        /\bnet(\s*(pay|salary|amount|wages?|payable))?\b/i.test(n) ||
-        n === "net pay" ||
-        n === "net salary",
-    },
-    {
-      key: "TOTAL_DEDUCTIONS",
-      altKey: "TOTAL_DED",
-      defaultType: "deduction",
-      test: (n) => /\btot(al)?\s*ded(uctions?)?\b/i.test(n),
-    },
-    {
       key: "PF",
       defaultType: "deduction",
       test: (n) => /\b(pf|epf|provident\s*fund)\b/i.test(n),
@@ -684,6 +668,23 @@ export function autoDetectPayrollMappings({
       key: "LOAN",
       defaultType: "deduction",
       test: (n) => /\bloan\b/i.test(n),
+    },
+    {
+      key: "TOTAL_DEDUCTIONS",
+      altKey: "TOTAL_DED",
+      defaultType: "deduction",
+      test: (n) => /\btot(al)?\s*ded(uctions?)?\b/i.test(n),
+    },
+    {
+      key: "NET_PAY",
+      altKey: "NET_SALARY",
+      defaultType: "earning",
+      test: (n) =>
+        n === "net" ||
+        /^net(\s*(pay|salary|amount|wages?|payable))?$/i.test(n) ||
+        /\bnet(\s*(pay|salary|amount|wages?|payable))?\b/i.test(n) ||
+        n === "net pay" ||
+        n === "net salary",
     },
   ];
 
@@ -1088,7 +1089,7 @@ export default function PayrollImportFieldMapping() {
             });
           }
         }
-        return updated;
+        return sortPayrollFieldConfigs(updated);
       });
 
       setIsProcessingAI(false);
@@ -1192,7 +1193,7 @@ export default function PayrollImportFieldMapping() {
           seen.add(item.key);
         }
       }
-      return result;
+      return sortPayrollFieldConfigs(result);
     });
 
     if (Object.keys(typesToAdd).length > 0) {
@@ -1583,7 +1584,7 @@ export default function PayrollImportFieldMapping() {
       {loadNext ? (
         <SalaryPayrollImportData
           env={env}
-          fieldConfigs={fieldConfigs}
+          fieldConfigs={sortPayrollFieldConfigs(fieldConfigs)}
           payrollId={payrollId}
           companyId={companyId}
           onBack={() => setLoadNext(false)}
@@ -2075,14 +2076,14 @@ export default function PayrollImportFieldMapping() {
                         if (prev.some((f) => f.key === targetKey)) {
                           return prev;
                         }
-                        return [
+                        return sortPayrollFieldConfigs([
                           ...prev,
                           {
                             key: targetKey,
                             required: false,
                             type: targetType,
                           },
-                        ];
+                        ]);
                       });
 
                       setFieldTypes((prev) => ({

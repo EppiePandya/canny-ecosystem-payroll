@@ -3,6 +3,8 @@ import { Button } from "@canny_ecosystem/ui/button";
 import { TableHead, TableHeader, TableRow } from "@canny_ecosystem/ui/table";
 import { cn } from "@canny_ecosystem/ui/utils/cn";
 
+import { sortPayrollFieldConfigs } from "./columns";
+
 type Props = {
   table?: any;
   className?: string;
@@ -18,9 +20,10 @@ export function ImportedDataTableHeader({
   loading,
   fieldConfigs,
 }: Props) {
+  const sortedFieldConfigs = sortPayrollFieldConfigs(fieldConfigs);
   const ImportPayrollDataArray: string[] = ["sr_no"];
 
-  for (const { key } of fieldConfigs) {
+  for (const { key } of sortedFieldConfigs) {
     const lowerKey = key.toLowerCase();
     if (!ImportPayrollDataArray.includes(lowerKey)) {
       ImportPayrollDataArray.push(lowerKey);
