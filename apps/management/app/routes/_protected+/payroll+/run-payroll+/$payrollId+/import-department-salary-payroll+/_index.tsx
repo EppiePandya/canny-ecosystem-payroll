@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { json, useLoaderData, useLocation } from "@remix-run/react";
+import { getDisambiguatedHeaders } from "@/routes/_protected+/payroll+/run-payroll+/import-salary-payroll+/_index";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { Combobox } from "@canny_ecosystem/ui/combobox";
@@ -184,9 +185,9 @@ export default function PayrollImportFieldMapping() {
   useEffect(() => {
     if (excelRawData.length > 0 && headerRow > 0) {
       const rawHeaders = excelRawData[headerRow - 1] || [];
-      const cleanHeaders = rawHeaders
-        .map((h) => (h === null || h === undefined ? "" : String(h).trim()))
-        .filter((h) => h !== "");
+      const cleanHeaders = getDisambiguatedHeaders(rawHeaders).filter(
+        (h) => h !== "",
+      );
       setHeaderArray(cleanHeaders);
     }
   }, [excelRawData, headerRow]);
@@ -468,9 +469,7 @@ export default function PayrollImportFieldMapping() {
 
     if (excelRawData.length > 0) {
       const rawHeaders = excelRawData[headerRow - 1] || [];
-      const headers = rawHeaders.map((h) =>
-        h === null || h === undefined ? "" : String(h).trim(),
-      );
+      const headers = getDisambiguatedHeaders(rawHeaders);
 
       const actualStart = Math.max(0, startRow - 1);
       const actualEnd = Math.min(excelRawData.length, endRow);

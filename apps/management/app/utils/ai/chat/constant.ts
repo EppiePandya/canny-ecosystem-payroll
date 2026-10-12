@@ -20,5 +20,7 @@ COMPANY FILTERING:
 • Follow foreign keys to filter by company
 `;
 
-export const GEMINI_MAIN = "gemini-2.5-flash";
-export const GEMINI_LITE = "gemini-2.5-flash-lite";
+// export const GEMINI_MAIN = "gemini-2.5-flash";
+// export const GEMINI_LITE = "gemini-2.5-flash-lite";
+export const GEMINI_MAIN = "gemini-3.8-flash";
+export const GEMINI_LITE = "gemini-3.8-flash";

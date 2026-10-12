@@ -8,6 +8,8 @@ import nodemailer from "nodemailer";
 import { google } from "googleapis";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
+import { transformPayrollExcelAttachment } from "./payroll-excel-transform.js";
+import { ingestTransformedPayrollToDatabase } from "./payroll-auto-ingest.js";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -765,9 +767,11 @@ class GmailAutoReplyManager {
             );
           }
 
-          // 8. Excel Attachment Validation & Inspection:
+          // 8. Excel Attachment Validation & Transformation:
           // If the mail doesn't contain an excel file, reply with "no excel found in mail".
-          // When it detects the excel, open and respond with total rows and the last row as a text, and return the same excel.
+          // When it detects the excel, transform it using GEMINI_MAIN to contain ONLY Employee Name, ESIC, Code, UAN,
+          // and attendance-calculated earnings and deductions that flow into Net Pay (excluding fixed monthly rates).
+          // If decoding or AI transformation fails, send a failure notification email.
           const excelAttachments = parsedAttachments.filter(isExcelAttachment);
           const hasExcelAttachment = excelAttachments.length > 0;
 
@@ -779,31 +783,171 @@ class GmailAutoReplyManager {
           }> = [];
 
           if (hasExcelAttachment) {
-            if (excelAttachments.length === 1) {
-              const info = parseExcelAttachmentInfo(
-                excelAttachments[0].content,
-                excelAttachments[0].filename || "attachment.xlsx"
+            try {
+              console.log(
+                `[GmailAutoReply] Excel attachment confirmed for UID ${uid} (${excelAttachments.map((a) => a.filename || "unnamed").join(", ")}). Starting AI transformation via GEMINI_MAIN...`
               );
-              replyText = `Total Rows: ${info.totalRows}\nLast Row: ${info.lastRowText}`;
-            } else {
-              replyText = excelAttachments
-                .map((att) => {
-                  const info = parseExcelAttachmentInfo(att.content, att.filename || "attachment.xlsx");
-                  return `File: ${att.filename || "attachment.xlsx"}\nTotal Rows: ${info.totalRows}\nLast Row: ${info.lastRowText}`;
-                })
-                .join("\n\n");
+
+              const summaries: string[] = [];
+
+              for (const att of excelAttachments) {
+                const origFilename = att.filename || "attachment.xlsx";
+                const transformResult = await transformPayrollExcelAttachment(
+                  att.content,
+                  origFilename
+                );
+
+                replyAttachments.push({
+                  filename: transformResult.transformedFilename,
+                  content: transformResult.transformedBuffer,
+                  contentType:
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                });
+
+                const attendanceSummary =
+                  transformResult.details.attendance &&
+                  transformResult.details.attendance.length > 0
+                    ? transformResult.details.attendance.join(", ")
+                    : "None detected";
+                const earningsSummary =
+                  transformResult.details.earnings.length > 0
+                    ? transformResult.details.earnings.join(", ")
+                    : "None";
+                const grossSummary =
+                  transformResult.details.grossCol || "Not detected";
+                const deductionsSummary =
+                  transformResult.details.deductions.length > 0
+                    ? transformResult.details.deductions.join(", ")
+                    : "None";
+                const netPaySummary =
+                  transformResult.details.netPayCol || "Not detected";
+
+                // Automatically ingest into database: match company, resolve/reuse fields, upsert attendance & salary entries
+                let dbSummary = "";
+                try {
+                  console.log(
+                    `[GmailAutoReply] Starting database payroll ingestion for "${transformResult.transformedFilename}"...`
+                  );
+                  const ingestResult = await ingestTransformedPayrollToDatabase({
+                    transformedBuffer: transformResult.transformedBuffer,
+                    transformedFilename: transformResult.transformedFilename,
+                    originalFilename: origFilename,
+                    emailSubject: subject,
+                    emailBodyText: parsedBodyText,
+                    senderEmail: fromAddress,
+                  });
+
+                  if (ingestResult.success) {
+                    dbSummary =
+                      `\n--- Database Payroll Ingestion Status ---\n` +
+                      `Company: ${ingestResult.companyName}\n` +
+                      `Period: Month ${ingestResult.month}/${ingestResult.year}\n` +
+                      `Payroll Run: ${ingestResult.payrollTitle} (${ingestResult.isNewPayroll ? "New payroll created" : "Existing payroll updated"})\n` +
+                      `Payroll Link: http://localhost:3000${ingestResult.payrollUrl}\n` +
+                      `Employees Processed: ${ingestResult.matchedEmployeesCount} matched (${ingestResult.unmatchedEmployeesCount} unmatched)\n` +
+                      `Attendance Records: ${ingestResult.attendanceCreatedCount} saved\n` +
+                      `Salary Entries: ${ingestResult.salaryEntriesCreatedCount} created/updated\n` +
+                      `Payroll Fields Reused: ${ingestResult.fieldsReusedCount} (${ingestResult.reusedFieldNames.join(", ") || "None"})\n` +
+                      `Payroll Fields Created: ${ingestResult.fieldsCreatedCount} (${ingestResult.createdFieldNames.join(", ") || "None"})\n` +
+                      `Total Net Amount: ₹${ingestResult.totalNetAmount.toLocaleString("en-IN")}`;
+                  } else {
+                    dbSummary = `\n--- Database Payroll Ingestion Notice ---\n${ingestResult.summaryText}`;
+                  }
+                } catch (ingestErr: any) {
+                  console.error(
+                    `[GmailAutoReply] Database ingestion error for "${origFilename}":`,
+                    ingestErr
+                  );
+                  dbSummary = `\n--- Database Payroll Ingestion Notice ---\nFailed to automatically ingest entries: ${ingestErr?.message || String(ingestErr)}`;
+                }
+
+                summaries.push(
+                  `File: ${transformResult.transformedFilename}\n` +
+                    `Total Records Processed: ${transformResult.recordsCount} (Total Rows: ${transformResult.totalRows})\n` +
+                    `Headers Included: ${transformResult.columns.join(", ")}\n` +
+                    `Attendance Data: ${attendanceSummary}\n` +
+                    `Calculated Earnings: ${earningsSummary}\n` +
+                    `Gross (Earned): ${grossSummary}\n` +
+                    `Calculated Deductions: ${deductionsSummary}\n` +
+                    `Net Pay: ${netPaySummary}\n` +
+                    `Last Row: ${transformResult.lastRowText}` +
+                    dbSummary
+                );
+              }
+
+              replyText =
+                `Hello,\n\nPlease find attached the transformed payroll Excel file(s).\n\n` +
+                `The newly generated sheet includes only:\n` +
+                `- Employee Name, ESIC, Code, UAN\n` +
+                `- Attendance data (Working Days, Present Days, Paid Holidays, Casual Leaves, OT Hours)\n` +
+                `- Attendance-calculated earnings, Gross (actual wages), deductions, and Net Pay\n` +
+                `* Fixed monthly master rates (e.g. Basic 20,000) have been excluded; only attendance-calculated amounts (e.g. Basic 15,000) are included.\n\n` +
+                `The monthly attendance records and salary payroll entries have also been processed and pushed to the database.\n\n` +
+                `Transformation & Ingestion Summary:\n${summaries.join("\n\n")}`;
+
+              console.log(
+                `[GmailAutoReply] Excel transformation successful for UID ${uid}. Preparing to reply with transformed file(s).`
+              );
+            } catch (transformErr: any) {
+              console.error(
+                `[GmailAutoReply] Excel transformation failed for UID ${uid}:`,
+                transformErr
+              );
+
+              const failureText =
+                `Hello,\n\nWe encountered an error while decoding and transforming your payroll Excel attachment:\n\n` +
+                `Error: ${transformErr?.message || "Invalid or corrupt Excel spreadsheet, or AI transformation error."}\n\n` +
+                `Please verify that the spreadsheet contains valid employee payroll records with attendance-calculated earnings and deductions, and try again.`;
+
+              // Send failure mail directly to sender on thread
+              try {
+                await this.sendThreadReply({
+                  toAddress: fromAddress,
+                  toName: fromName,
+                  originalSubject: subject,
+                  originalMessageId: envelope.messageId,
+                  originalReferences: envelope.inReplyTo,
+                  replyMessage: failureText,
+                });
+                console.log(
+                  `[GmailAutoReply] Sent failure notification email to "${fromAddress}" for UID ${uid}.`
+                );
+              } catch (sendFailureErr) {
+                console.error(
+                  `[GmailAutoReply] Failed to send failure notification to "${fromAddress}":`,
+                  sendFailureErr
+                );
+              }
+
+              // Mark as \Answered in IMAP
+              try {
+                await client.messageFlagsAdd(String(uid), ["\\Answered"], { uid: true });
+              } catch {}
+
+              // Record in processed IDs to avoid retry loops
+              this.processedIds.add(messageId);
+              this.processedIds.add(uidKey);
+              this.processedIds.add(msgIdKey);
+              this.config.processedCount = (this.config.processedCount || 0) + 1;
+
+              this.history.unshift({
+                id: `${Date.now()}-${uid}`,
+                uid,
+                messageId,
+                from: `${fromName} <${fromAddress}>`,
+                subject,
+                repliedAt: new Date().toISOString(),
+                replyMessage: failureText,
+                status: "error",
+                error: transformErr?.message || String(transformErr),
+                verificationType: isForwarded ? "forwarded" : "direct",
+                forwardedEmail: isForwarded ? forwardedEmail : null,
+                hasExcelAttachment,
+              });
+              if (this.history.length > 100) this.history.pop();
+              this.save();
+              continue;
             }
-
-            // Return the same excel file(s) as attachment in the auto-reply
-            replyAttachments = excelAttachments.map((att) => ({
-              filename: att.filename || "attachment.xlsx",
-              content: att.content,
-              contentType: att.contentType,
-            }));
-
-            console.log(
-              `[GmailAutoReply] Excel attachment confirmed for UID ${uid} (${excelAttachments.map((a) => a.filename || "unnamed").join(", ")}). Sending row summary and returning same excel file(s).`
-            );
           } else {
             replyText = "no excel found in mail";
             console.log(
