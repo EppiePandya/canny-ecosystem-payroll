@@ -9,7 +9,8 @@ import {
   recalculatePayrollTotals,
   createAttendanceByPayrollImportAndGiveID,
 } from "@canny_ecosystem/supabase/mutations";
-import { ensureEnvLoaded, GEMINI_MAIN } from "./payroll-excel-transform.js";
+import { ensureEnvLoaded } from "./payroll-excel-transform.js";
+import { GEMINI_MAIN, GEMINI_LITE } from "@/utils/ai/chat/constant.js";
 
 ensureEnvLoaded();
 
@@ -234,10 +235,8 @@ Matching Rules:
 Return your match adhering strictly to the schema.`;
 
   const modelsToTry = [
-    GEMINI_MAIN,
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-3.8-flash",
+    GEMINI_LITE,
+    GEMINI_MAIN
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastErr: any = null;
@@ -342,10 +341,8 @@ CLASSIFICATION RULES:
 Provide a mapping for EVERY header listed.`;
 
   const modelsToTry = [
-    GEMINI_MAIN,
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-3.8-flash",
+    GEMINI_LITE,
+    GEMINI_MAIN
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastErr: any = null;
@@ -431,7 +428,7 @@ export async function ingestTransformedPayrollToDatabase({
 
   const rawHeaders: string[] = (rawRows[0] || []).map((h) => String(h || "").trim());
   const dataRows: any[][] = rawRows.slice(1).filter((r) => {
-    return r && r.some((c) => c !== null && c !== undefined && String(c).trim() !== "");
+    return r?.some((c) => c !== null && c !== undefined && String(c).trim() !== "");
   });
 
   const totalEmployeesInSheet = dataRows.length;
@@ -912,6 +909,15 @@ export async function ingestTransformedPayrollToDatabase({
     const rawUan = uanColIdx >= 0 ? row[uanColIdx] : null;
     const rawEsic = esicColIdx >= 0 ? row[esicColIdx] : null;
 
+    // Ignore summary Total row generated at the bottom of the transformed sheet
+    if (
+      (rawName && String(rawName).trim().toLowerCase() === "total") ||
+      (rawCode && String(rawCode).trim().toLowerCase() === "total") ||
+      String(row[0] ?? "").trim().toLowerCase() === "total"
+    ) {
+      continue;
+    }
+
     // Match Employee
     let employeeId: string | null = null;
 
@@ -945,7 +951,7 @@ export async function ingestTransformedPayrollToDatabase({
     const parseNum = (val: any): number => {
       if (val === null || val === undefined || val === "") return 0;
       const n = Number(String(val).replace(/,/g, "").trim());
-      return isNaN(n) ? 0 : n;
+      return Number.isNaN(n) ? 0 : n;
     };
 
     let workingDays = workingDaysColIdx >= 0 ? parseNum(row[workingDaysColIdx]) : 0;
