@@ -10,22 +10,6 @@ import * as XLSX from "xlsx";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
-export function ensureEnvLoaded() {
-  const possiblePaths = [
-    path.resolve(process.cwd(), ".env"),
-    path.resolve(process.cwd(), "apps/management/.env"),
-    path.resolve(currentDir, "../.env"),
-    path.resolve(currentDir, "../../.env"),
-  ];
-  for (const envPath of possiblePaths) {
-    try {
-      if (fs.existsSync(envPath)) {
-        dotenv.config({ path: envPath, override: true });
-      }
-    } catch {}
-  }
-}
-ensureEnvLoaded();
 
 // -----------------------------------------------------------------------------
 // TYPES & RESULT INTERFACES
@@ -1123,7 +1107,7 @@ export async function transformPayrollExcelAttachment(
   content: Buffer | Uint8Array,
   filename: string,
 ): Promise<ExcelTransformationResult> {
-  ensureEnvLoaded();
+  
 
   let workbook: XLSX.WorkBook;
   try {

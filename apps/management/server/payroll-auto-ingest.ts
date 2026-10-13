@@ -9,15 +9,14 @@ import {
   recalculatePayrollTotals,
   createAttendanceByPayrollImportAndGiveID,
 } from "@canny_ecosystem/supabase/mutations";
-import { ensureEnvLoaded } from "./payroll-excel-transform.js";
 import { GEMINI_MAIN, GEMINI_LITE } from "@/utils/ai/chat/constant.js";
 
-ensureEnvLoaded();
+
 
 let supabaseClient: SupabaseClient | null = null;
 
 function getSupabase(): SupabaseClient {
-  ensureEnvLoaded();
+  
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
   if (!url || !key) {

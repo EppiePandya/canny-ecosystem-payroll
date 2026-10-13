@@ -13,27 +13,10 @@ import { ingestTransformedPayrollToDatabase } from "./payroll-auto-ingest.js";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
-function ensureEnvLoaded() {
-  const possiblePaths = [
-    path.resolve(process.cwd(), ".env"),
-    path.resolve(process.cwd(), "apps/management/.env"),
-    path.resolve(currentDir, "../.env"),
-    path.resolve(currentDir, "../../.env"),
-  ];
-  for (const envPath of possiblePaths) {
-    try {
-      if (fs.existsSync(envPath)) {
-        dotenv.config({ path: envPath, override: true });
-      }
-    } catch {}
-  }
-}
-ensureEnvLoaded();
 
 let supabaseClient: SupabaseClient | null = null;
 
 function getSupabase(): SupabaseClient | null {
-  ensureEnvLoaded();
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
@@ -127,7 +110,6 @@ function extractForwardedInfo(bodyText: string, bodyHtml?: string, subject?: str
     const match = combined.match(regex);
     if (match && match[1]) {
       const email = match[1].trim().toLowerCase();
-      ensureEnvLoaded();
       const rawAllowed = (process.env.AUTO_REPLY_ALLOWED_EMAIL?.trim() || "cannycms@gmail.com").toLowerCase();
       const allowedSenders = rawAllowed
         .split(",")
@@ -295,7 +277,7 @@ function ensureStorageDir() {
 }
 
 function loadStoredData(): StoredData {
-  ensureEnvLoaded();
+  
   ensureStorageDir();
   const searchFiles = [
     STORAGE_FILE,
@@ -379,7 +361,7 @@ class GmailAutoReplyManager {
   }
 
   public getConfig(): AutoReplyConfig {
-    ensureEnvLoaded();
+    
     const envAllowed = process.env.AUTO_REPLY_ALLOWED_EMAIL?.trim();
     return {
       ...this.config,
@@ -509,7 +491,7 @@ class GmailAutoReplyManager {
   }
 
   private createTransporter() {
-    ensureEnvLoaded();
+    
     const senderEmail = this.getSenderEmail();
 
     if (this.isOAuthAvailable()) {
@@ -576,7 +558,7 @@ class GmailAutoReplyManager {
     repliedCount: number;
     error: string | null;
   }> {
-    ensureEnvLoaded();
+    
     const userEmail = this.getSenderEmail();
     const rawPass = process.env.GMAIL_APP_PASSWORD;
     const pass = rawPass ? rawPass.replace(/\s+/g, "") : undefined;
@@ -686,7 +668,7 @@ class GmailAutoReplyManager {
           }
 
           // 5. Verification 1: Only reply if the mail is coming from specific allowed email (e.g. cannycms@gmail.com or cannychauhan3@gmail.com)
-          ensureEnvLoaded();
+          
           const rawAllowed = (process.env.AUTO_REPLY_ALLOWED_EMAIL?.trim() || this.config.allowedSenderEmail || "cannycms@gmail.com").toLowerCase();
           const allowedSenders = rawAllowed
             .split(",")
