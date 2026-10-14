@@ -239,8 +239,46 @@ export function findBestHeaderRowIndex(rows: any[][]): number {
   return bestIndex;
 }
 
+export function getExcelColumnLetter(colIndex: number): string {
+  let temp = colIndex;
+  let letter = "";
+  while (temp >= 0) {
+    letter = String.fromCharCode((temp % 26) + 65) + letter;
+    temp = Math.floor(temp / 26) - 1;
+  }
+  return letter;
+}
+
+export function getDisambiguatedHeaders(rawRow: any[]): string[] {
+  if (!rawRow || !Array.isArray(rawRow)) return [];
+
+  const rawHeaders = rawRow.map((h) =>
+    h === null || h === undefined ? "" : String(h).trim(),
+  );
+
+  // Count occurrences of each non-empty header (case-insensitive)
+  const headerCounts = new Map<string, number>();
+  for (const h of rawHeaders) {
+    if (!h) continue;
+    const lower = h.toLowerCase();
+    headerCounts.set(lower, (headerCounts.get(lower) || 0) + 1);
+  }
+
+  // Disambiguate duplicate headers by appending (Col X)
+  return rawHeaders.map((h, colIdx) => {
+    if (!h) return "";
+    const lower = h.toLowerCase();
+    if ((headerCounts.get(lower) || 0) > 1) {
+      const colLetter = getExcelColumnLetter(colIdx);
+      return `${h} (Col ${colLetter})`;
+    }
+    return h;
+  });
+}
+
 const normalizeHeader = (str: string) =>
   String(str || "")
+    .replace(/\(col\s+[a-z0-9]+\)/gi, "")
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
@@ -353,6 +391,13 @@ const isIgnoredHeader = (header: string): boolean => {
 };
 
 export const isComponentSynonym = (keyA: string, keyB: string): boolean => {
+  if (keyA === keyB) return true;
+  if (
+    keyA !== keyB &&
+    (/\(col\s+[a-z0-9]+\)/i.test(keyA) || /\(col\s+[a-z0-9]+\)/i.test(keyB))
+  ) {
+    return false;
+  }
   const na = normalizeHeader(keyA);
   const nb = normalizeHeader(keyB);
   if (na === nb) return true;
@@ -1016,9 +1061,9 @@ export default function PayrollImportFieldMapping() {
   useEffect(() => {
     if (excelRawData.length > 0 && headerRow > 0) {
       const rawHeaders = excelRawData[headerRow - 1] || [];
-      const cleanHeaders = rawHeaders
-        .map((h) => (h === null || h === undefined ? "" : String(h).trim()))
-        .filter((h) => h !== "");
+      const cleanHeaders = getDisambiguatedHeaders(rawHeaders).filter(
+        (h) => h !== "",
+      );
       setHeaderArray(cleanHeaders);
     }
   }, [excelRawData, headerRow]);
@@ -1437,9 +1482,7 @@ export default function PayrollImportFieldMapping() {
 
     if (excelRawData.length > 0) {
       const rawHeaders = excelRawData[headerRow - 1] || [];
-      const headers = rawHeaders.map((h) =>
-        h === null || h === undefined ? "" : String(h).trim(),
-      );
+      const headers = getDisambiguatedHeaders(rawHeaders);
 
       const actualStart = Math.max(0, startRow - 1);
       const actualEnd = Math.min(excelRawData.length, endRow);

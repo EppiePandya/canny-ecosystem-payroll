@@ -96,11 +96,9 @@ export async function fetchInboxEmails(
 ): Promise<{ emails: InboxEmail[]; error: string | null }> {
   const cleanSearch = searchQuery.trim();
 
-  // Return cached result if fresh and has sufficient emails (only when no search query)
+  // Return cached result if fresh (only when no search query)
   if (!cleanSearch && !forceRefresh && memoryCache && Date.now() - memoryCache.timestamp < CACHE_TTL_MS) {
-    if (memoryCache.limit >= limit || memoryCache.emails.length >= limit) {
-      return { emails: memoryCache.emails, error: null };
-    }
+    return { emails: memoryCache.emails, error: null };
   }
 
   const userEmail = process.env.GMAIL_USER || "cannycms@gmail.com";
@@ -186,19 +184,13 @@ export async function fetchInboxEmails(
           }
 
           if (searchedUids.length > 0) {
-            const fetchCount = Math.min(searchedUids.length, Math.max(Math.round(limit * 2.5), 50));
-            const targetUids = searchedUids.slice(-fetchCount);
-            range = targetUids.join(",");
+            range = searchedUids.join(",");
             isUidRange = true;
           } else {
-            const fetchCount = Math.min(totalMessages, Math.max(Math.round(limit * 2.5), 50));
-            const start = Math.max(1, totalMessages - fetchCount + 1);
-            range = `${start}:${totalMessages}`;
+            range = totalMessages > 0 ? `1:${totalMessages}` : "1";
           }
         } else {
-          const fetchCount = Math.min(totalMessages, Math.max(Math.round(limit * 2.5), 50));
-          const start = Math.max(1, totalMessages - fetchCount + 1);
-          range = `${start}:${totalMessages}`;
+          range = totalMessages > 0 ? `1:${totalMessages}` : "1";
         }
 
         // Phase 1: Fetch envelopes & bodyStructure
@@ -216,75 +208,11 @@ export async function fetchInboxEmails(
           rawMessages.push(message);
         }
 
-        // Phase 2: Fetch source for top 10 most recent messages for snippet, html, text & attachments
-        const recentUids = rawMessages.slice(-10).map((m) => m.uid);
-
-        const sourceMap: Record<number, any> = {};
-        if (recentUids.length > 0) {
-          try {
-            const uidRange = recentUids.join(",");
-            const sourceFetchPromise = (async () => {
-              for await (const msg of client.fetch(
-                uidRange,
-                { source: true, uid: true },
-                { uid: true }
-              )) {
-                if (msg.source) {
-                  try {
-                    const parsed = await simpleParser(msg.source);
-                    sourceMap[msg.uid] = parsed;
-                  } catch (e) { }
-                }
-              }
-            })();
-
-            // Cap source preview fetch to max 8 seconds so it never stalls the response
-            await Promise.race([
-              sourceFetchPromise,
-              new Promise((res) => setTimeout(res, 8000)),
-            ]);
-          } catch (e) {
-            console.error("Failed fetching source batch:", e);
-          }
-        }
-
         for (const message of rawMessages) {
-          const parsed = sourceMap[message.uid];
-          let snippet = "";
-          let html = "";
-          let text = "";
-          let attachmentsList: any[] = [];
-
-          if (parsed) {
-            html = parsed.html || (parsed.textAsHtml ? parsed.textAsHtml : "");
-            text = parsed.text || "";
-            snippet = (parsed.text || "").slice(0, 150).replace(/\s+/g, " ").trim();
-            if (parsed.attachments && parsed.attachments.length > 0) {
-              attachmentsList = parsed.attachments.map((att: any) => {
-                const mimeType = att.contentType || "application/octet-stream";
-                // Exclude giant base64 payloads (>3MB) from initial list payload to prevent network bloat
-                const isReasonableSize = !att.size || att.size < 3 * 1024 * 1024;
-                const base64 = isReasonableSize && att.content ? att.content.toString("base64") : "";
-                const contentUrl = base64 ? `data:${mimeType};base64,${base64}` : undefined;
-
-                return {
-                  filename: att.filename || "attachment",
-                  contentType: mimeType,
-                  size: att.size || 0,
-                  contentUrl,
-                };
-              });
-            }
-          } else {
-            snippet = message.envelope?.subject || "(No Preview)";
-          }
-
-          // Fallback attachment extraction from bodyStructure if simpleParser didn't return attachments
-          if (attachmentsList.length === 0 && checkHasAttachments(message.bodyStructure)) {
-            attachmentsList = extractAttachmentsFromStructure(message.bodyStructure);
-          }
-
-          const hasAtt = attachmentsList.length > 0 || checkHasAttachments(message.bodyStructure);
+          const attachmentsList = checkHasAttachments(message.bodyStructure)
+            ? extractAttachmentsFromStructure(message.bodyStructure)
+            : [];
+          const hasAtt = attachmentsList.length > 0;
           const fromObject = message.envelope?.from?.[0];
 
           emails.push({
@@ -298,13 +226,12 @@ export async function fetchInboxEmails(
             to: message.envelope?.to?.[0]?.address || "",
             date: message.envelope?.date ? message.envelope.date.toISOString() : new Date().toISOString(),
             seen: message.flags ? message.flags.has("\\Seen") : true,
-            snippet,
-            html,
-            text,
+            snippet: "",
             hasAttachments: hasAtt,
             attachments: attachmentsList,
           });
         }
+
 
         let reversed = emails.reverse();
         if (cleanSearch) {

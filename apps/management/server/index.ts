@@ -11,6 +11,10 @@ import getPort, { portNumbers } from "get-port";
 import morgan from "morgan";
 import http from "node:http";
 import type { ServerBuild } from "@remix-run/node";
+import {
+  startGmailAutoReplyWorker,
+  stopGmailAutoReplyWorker,
+} from "./gmail-auto-reply.js";
 
 const MODE = process.env.NODE_ENV ?? "development";
 const IS_PROD = MODE === "production";
@@ -112,6 +116,7 @@ const rateLimitBase = {
   limit: 1000 * maxMultiple,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { trustProxy: false },
 };
 
 const strongest = rateLimit({ ...rateLimitBase, limit: 10 * maxMultiple });
@@ -202,10 +207,21 @@ ${lanUrl ? `On Your Network:  ${lanUrl}` : ""}
 Press Ctrl+C to stop
 `.trim(),
   );
+
+  // Initialize and start background Gmail auto-reply worker on server startup
+  try {
+    startGmailAutoReplyWorker();
+  } catch (workerErr) {
+    console.error("[Server] Failed to initialize Gmail auto-reply worker:", workerErr);
+  }
 });
 
 /* -------------------- GRACEFUL SHUTDOWN -------------------- */
 closeWithGrace(async ({ err }) => {
+  try {
+    stopGmailAutoReplyWorker();
+  } catch (e) {}
+
   await new Promise((resolve, reject) => {
     server.close((e) => (e ? reject(e) : resolve("ok")));
   });

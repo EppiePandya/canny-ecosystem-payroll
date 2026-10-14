@@ -48,21 +48,11 @@ export interface StorageReimbursementFileItem {
   relativePath: string;
 }
 
-let envLoaded = false;
-function ensureEnvLoaded() {
-  if (!envLoaded) {
-    try {
-      (dotenv.config as any)({ override: true, quiet: true });
-    } catch {}
-    envLoaded = true;
-  }
-}
 
 /**
  * Returns whether the system is running in Local Desktop Folder mode or Google Drive mode
  */
 export function getStorageMode(): StorageMode {
-  ensureEnvLoaded();
   if (process.env.STORAGE_MODE === "google_drive") {
     return "google_drive";
   }
@@ -70,7 +60,6 @@ export function getStorageMode(): StorageMode {
 }
 
 function getGoogleDriveClient() {
-  ensureEnvLoaded();
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let key = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
   if (!email || !key) {

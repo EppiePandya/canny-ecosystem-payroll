@@ -1,6 +1,7 @@
 {
   "extends": "@canny_ecosystem/typescript/base.json",
   "compilerOptions": {
+    "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],

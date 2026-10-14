@@ -48,6 +48,7 @@ yarn-error.log*
 !tsconfig.json
 !turbo.json
 !biome.json
+!tooling/typescript/*.json
 
 # Files
 packages/supabase/src/types/db.ts
