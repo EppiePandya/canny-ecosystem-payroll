@@ -1,10 +1,7 @@
-import { Button } from "@canny_ecosystem/ui/button";
-import { DropdownMenuTrigger } from "@canny_ecosystem/ui/dropdown-menu";
-import { Icon } from "@canny_ecosystem/ui/icon";
-import type { ColumnDef } from "@tanstack/react-table";
+import { Checkbox } from "@canny_ecosystem/ui/checkbox";
 import { cn } from "@canny_ecosystem/ui/utils/cn";
+import type { ColumnDef } from "@tanstack/react-table";
 
-import { ImportedSalaryPayrollOptionsDropdown } from "./imported-table-options";
 import type { FieldConfig } from "@/routes/_protected+/payroll+/run-payroll+/import-salary-payroll+/_index";
 import { replaceUnderscore } from "@canny_ecosystem/utils";
 
@@ -25,6 +22,34 @@ export const ImportedDataColumns = (
   fieldConfigs: FieldConfig[],
 ): ColumnDef<any>[] => [
   {
+    id: "select",
+    header: ({ table }) => (
+      <div className="flex items-center justify-center px-1">
+        <Checkbox
+          checked={
+            table.getIsAllPageRowsSelected() ||
+            (table.getIsSomePageRowsSelected() && "indeterminate")
+          }
+          onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
+          aria-label="Select all"
+          className="translate-y-[2px]"
+        />
+      </div>
+    ),
+    cell: ({ row }) => (
+      <div className="flex items-center justify-center px-1">
+        <Checkbox
+          checked={row.getIsSelected()}
+          onCheckedChange={(value) => row.toggleSelected(!!value)}
+          aria-label="Select row"
+          className="translate-y-[2px]"
+        />
+      </div>
+    ),
+    enableSorting: false,
+    enableHiding: false,
+  },
+  {
     accessorKey: "sr_no",
     header: "Sr No.",
     cell: ({ row }) => {
@@ -40,7 +65,19 @@ export const ImportedDataColumns = (
       const highlightKey = getHighlightKey(row.original, fieldConfigs);
       const shouldHighlight = isNewEmployee && key === highlightKey;
 
-      const value: any = row.original?.[key as keyof any];
+      const rawVal = row.original?.[key as keyof any];
+      const value: any =
+        rawVal !== undefined && rawVal !== null && rawVal !== ""
+          ? rawVal
+          : key === "uan_number"
+            ? row.original?.uan_no
+            : key === "uan_no"
+              ? row.original?.uan_number
+              : key === "esic_number"
+                ? row.original?.esic_no
+                : key === "esic_no"
+                  ? row.original?.esic_number
+                  : undefined;
       const displayColor =
         typeof value === "object"
           ? value?.type === "earning"
@@ -52,7 +89,9 @@ export const ImportedDataColumns = (
           ? Math.round(value.amount)
           : typeof value === "number"
             ? Math.round(value)
-            : value ?? "--";
+            : value !== undefined && value !== null && value !== ""
+              ? value
+              : "--";
 
       return (
         <div className="flex items-center gap-1.5 min-w-0">
@@ -75,27 +114,4 @@ export const ImportedDataColumns = (
       );
     },
   })),
-
-  {
-    id: "actions",
-    enableSorting: false,
-    enableHiding: false,
-    cell: ({ row }) => {
-      return (
-        <ImportedSalaryPayrollOptionsDropdown
-          key={JSON.stringify(row.original)}
-          index={row.index}
-          data={row.original}
-          triggerChild={
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="h-8 w-8 p-0">
-                <span className="sr-only">Open menu</span>
-                <Icon name="dots-vertical" />
-              </Button>
-            </DropdownMenuTrigger>
-          }
-        />
-      );
-    },
-  },
 ];

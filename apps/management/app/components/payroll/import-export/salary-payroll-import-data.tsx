@@ -1,26 +1,52 @@
+import { LoadingSpinner } from "@/components/loading-spinner";
 import { useImportStoreForSalaryPayroll } from "@/store/import";
 import { useSupabase } from "@canny_ecosystem/supabase/client";
-import {
-  getEmployeeIdsByEmployeeCodes,
-  getEmployeeIdsByEsicNumber,
-  getEmployeeIdsByUanNumber,
-  getMonthlyAttendanceByEmployeeIds,
-} from "@canny_ecosystem/supabase/queries";
+import { getMonthlyAttendanceByEmployeeIds } from "@canny_ecosystem/supabase/queries";
 import type { SupabaseEnv } from "@canny_ecosystem/supabase/types";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@canny_ecosystem/ui/alert-dialog";
 import { Button } from "@canny_ecosystem/ui/button";
+import { Combobox } from "@canny_ecosystem/ui/combobox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@canny_ecosystem/ui/dialog";
 import { Icon } from "@canny_ecosystem/ui/icon";
 import { Input } from "@canny_ecosystem/ui/input";
+import { Label } from "@canny_ecosystem/ui/label";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@canny_ecosystem/ui/sheet";
 import { useToast } from "@canny_ecosystem/ui/use-toast";
 import { cn } from "@canny_ecosystem/ui/utils/cn";
-import { useSubmit, useNavigation, useNavigate } from "@remix-run/react";
-import { LoadingSpinner } from "@/components/loading-spinner";
+import { replaceUnderscore } from "@canny_ecosystem/utils";
+import { useNavigate, useNavigation } from "@remix-run/react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useState, useEffect, useMemo } from "react";
-import { ImportedDataTable } from "../salary-imported-table/imported-data-table";
-import { ImportedDataColumns } from "../salary-imported-table/columns";
-import type { FieldConfig } from "@/routes/_protected+/payroll+/run-payroll+/import-salary-payroll+/_index";
 import { CreateUnmatchedEmployeePanel } from "@/components/employees/import-export/create-unmatched-employee-panel";
-import { Dialog, DialogContent } from "@canny_ecosystem/ui/dialog";
+import type {
+  FieldConfig,
+  SheetDataEntry,
+} from "@/routes/_protected+/payroll+/run-payroll+/import-salary-payroll+/_index";
+import { ImportedDataColumns } from "../salary-imported-table/columns";
+import { ImportedDataTable } from "../salary-imported-table/imported-data-table";
 
 const isValidIdentifier = (val: any) => {
   if (!val) return false;
@@ -38,57 +64,174 @@ const isValidIdentifier = (val: any) => {
   );
 };
 
+const getRecordAmount = (val: any): number => {
+  if (val === undefined || val === null || val === "") return 0;
+  if (typeof val === "object" && val !== null && "amount" in val) {
+    return Number(val.amount) || 0;
+  }
+  if (typeof val === "number") return val;
+  const parsed = Number(String(val).replace(/,/g, ""));
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const setRecordAmount = (
+  existingVal: any,
+  newAmount: number,
+  type: "earning" | "deduction" = "earning",
+) => {
+  const rounded = Math.round(newAmount);
+  if (typeof existingVal === "object" && existingVal !== null) {
+    return {
+      ...existingVal,
+      amount: rounded,
+      type: existingVal.type || type,
+    };
+  }
+  return {
+    amount: rounded,
+    type,
+    consider_for_epf: false,
+    consider_for_esic: false,
+  };
+};
+
+const getInsertIndexForNewColumn = (
+  configs: FieldConfig[],
+  type: "earning" | "deduction",
+): number => {
+  if (type === "earning") {
+    // "if it s earning then it should be just before left side of gross"
+    const grossIdx = configs.findIndex((f) => f.key.toLowerCase() === "gross");
+    if (grossIdx !== -1) return grossIdx;
+
+    const firstDedOrNetIdx = configs.findIndex(
+      (f) => f.type === "deduction" || f.key.toLowerCase() === "net_pay",
+    );
+    if (firstDedOrNetIdx !== -1) return firstDedOrNetIdx;
+
+    return configs.length;
+  }
+
+  // "and same in deduction it should be just beside deduction"
+  const totalDedIdx = configs.findIndex(
+    (f) =>
+      f.key.toLowerCase() === "total_deductions" ||
+      f.key.toLowerCase() === "total_deduction" ||
+      f.key.toLowerCase() === "deduction",
+  );
+  if (totalDedIdx !== -1) {
+    return totalDedIdx;
+  }
+
+  const netPayIdx = configs.findIndex((f) => f.key.toLowerCase() === "net_pay");
+  if (netPayIdx !== -1) {
+    return netPayIdx;
+  }
+
+  let lastDedIdx = -1;
+  for (let i = 0; i < configs.length; i++) {
+    if (configs[i].type === "deduction") {
+      lastDedIdx = i;
+    }
+  }
+  if (lastDedIdx !== -1) {
+    return lastDedIdx + 1;
+  }
+
+  return configs.length;
+};
+
 export function SalaryPayrollImportData({
   env,
-  fieldConfigs,
-  payrollId,
+  fieldConfigs: propFieldConfigs,
+  initialSheetsData,
+  payrollId: propPayrollId,
   companyId,
   onBack,
 }: {
   env: SupabaseEnv;
-  fieldConfigs: FieldConfig[];
+  fieldConfigs?: FieldConfig[];
+  initialSheetsData?: SheetDataEntry[];
   payrollId?: string;
   companyId: string;
   onBack?: () => void;
 }) {
-  const submit = useSubmit();
   const navigation = useNavigation();
   const navigate = useNavigate();
   const { toast } = useToast();
   const { supabase } = useSupabase({ env });
-  const { importData } = useImportStoreForSalaryPayroll();
+  const { importData, setImportData } = useImportStoreForSalaryPayroll();
+
+  // Multi-sheet state
+  const [sheetsData, setSheetsData] = useState<SheetDataEntry[]>(() => {
+    if (initialSheetsData && initialSheetsData.length > 0) {
+      return initialSheetsData;
+    }
+    return [
+      {
+        sheetName: "Sheet 1",
+        fieldConfigs: propFieldConfigs || [],
+        records: importData.data || [],
+        isImported: false,
+        importedCount: 0,
+      },
+    ];
+  });
+
+  const [activeSheetIndex, setActiveSheetIndex] = useState<number>(0);
+  const [currentPayrollId, setCurrentPayrollId] = useState<string | undefined>(
+    propPayrollId,
+  );
+
+  useEffect(() => {
+    if (initialSheetsData && initialSheetsData.length > 0) {
+      setSheetsData(initialSheetsData);
+    }
+  }, [initialSheetsData]);
+
+  const activeSheet = sheetsData[activeSheetIndex] || sheetsData[0];
+  const activeFieldConfigs =
+    activeSheet?.fieldConfigs || propFieldConfigs || [];
+  const activeRecords = activeSheet?.records || [];
 
   const [searchString, setSearchString] = useState("");
-  const [enrichedData, setEnrichedData] = useState<any[]>([]);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [tableData, setTableData] = useState<any[]>([]);
   const [showUnmatchedView, setShowUnmatchedView] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [skippedKeys, setSkippedKeys] = useState<Set<string>>(new Set());
 
+  // Database employees and sites cache
+  const [allEmps, setAllEmps] = useState<any[]>([]);
+  const [allSites, setAllSites] = useState<any[]>([]);
+  const [existingEmployeeIds, setExistingEmployeeIds] = useState<Set<string>>(
+    new Set(),
+  );
+
+  // Modal states: Bulk Update, Bulk Delete, Add Column, Delete Column
+  const [isBulkUpdateOpen, setIsBulkUpdateOpen] = useState(false);
+  const [bulkColKey, setBulkColKey] = useState("");
+  const [bulkScope, setBulkScope] = useState<"all" | "selected">("all");
+  const [bulkValue, setBulkValue] = useState("");
+  const [selectedIndicesForBulk, setSelectedIndicesForBulk] = useState<
+    number[]
+  >([]);
+
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [indicesToDelete, setIndicesToDelete] = useState<number[]>([]);
+
+  const [isAddColOpen, setIsAddColOpen] = useState(false);
+  const [newColName, setNewColName] = useState("");
+  const [newColType, setNewColType] = useState("earning");
+  const [newColDefaultAmount, setNewColDefaultAmount] = useState<number>(0);
+
+  const [colToDelete, setColToDelete] = useState<string | null>(null);
+
+  // Fetch all company employees and sites once (or on refreshTrigger)
   useEffect(() => {
     let active = true;
-    async function fetchEmployeeDetails() {
-      if (!importData.data || importData.data.length === 0) return;
-
-      const employeeCodes = importData.data
-        .map((item: any) => String(item.employee_code || "").trim())
-        .filter((code: string) => isValidIdentifier(code));
-      const uanNumbers = importData.data
-        .map((item: any) => String(item.uan_number || "").trim())
-        .filter((uan: string) => isValidIdentifier(uan));
-      const esicNumbers = importData.data
-        .map((item: any) => String(item.esic_number || "").trim())
-        .filter((esic: string) => isValidIdentifier(esic));
-
-      if (
-        uanNumbers.length === 0 &&
-        employeeCodes.length === 0 &&
-        esicNumbers.length === 0
-      )
-        return;
-
-      let allEmps: any[] = [];
+    async function fetchCompanyMasterData() {
+      let emps: any[] = [];
       let page = 0;
       const pageSize = 1000;
 
@@ -102,350 +245,391 @@ export function SalaryPayrollImportData({
           .range(page * pageSize, (page + 1) * pageSize - 1);
 
         if (error || !data || data.length === 0) break;
-        allEmps = [...allEmps, ...data];
+        emps = [...emps, ...data];
         if (data.length < pageSize) break;
         page++;
       }
 
-      let allSites: any[] = [];
       const { data: sitesData } = await supabase
         .from("sites")
         .select("id, name")
         .eq("company_id", companyId);
-      allSites = sitesData || [];
 
-      if (allEmps.length === 0 || !active) return;
-
-      const getNormalizedWords = (val: any) => {
-        if (!val) return [];
-        let s = String(val).toLowerCase();
-        s = s.replace(/\bnull\b/g, "");
-        return s
-          .replace(/[^a-z0-9\s]/g, " ")
-          .split(/\s+/)
-          .filter((w) => w.length > 0)
-          .sort();
-      };
-
-      const getEmployeeSiteNames = (emp: any): string[] => {
-        if (!emp.work_details) return [];
-        const wds = Array.isArray(emp.work_details)
-          ? emp.work_details
-          : [emp.work_details];
-        return wds
-          .map((wd: any) => wd?.sites?.name || wd?.site?.name)
-          .filter(Boolean);
-      };
-
-      const normalizeSiteName = (name: any) => {
-        return String(name || "")
-          .toLowerCase()
-          .trim()
-          .replace(/[^a-z0-9]/g, "");
-      };
-
-      const isSiteMatch = (sheetName: string, siteNames: string[]) => {
-        if (!sheetName || siteNames.length === 0) return false;
-        const normalizedSheet = normalizeSiteName(sheetName);
-        if (!normalizedSheet) return false;
-
-        return siteNames.some((siteName) => {
-          const normalizedSite = normalizeSiteName(siteName);
-          if (!normalizedSite) return false;
-          return (
-            normalizedSheet === normalizedSite ||
-            normalizedSheet.includes(normalizedSite) ||
-            normalizedSite.includes(normalizedSheet)
-          );
-        });
-      };
-
-      const isSheetNameASite = (sheetName: string) => {
-        if (!sheetName) return false;
-        const allSiteNames = allSites.map((s) => s.name).filter(Boolean);
-        return isSiteMatch(sheetName, allSiteNames);
-      };
-
-      let existingEmployeeIds = new Set<string>();
-      if (payrollId) {
-        const { data: existingEntries, error: existingEntriesError } =
-          await supabase
-            .from("salary_entries")
-            .select("monthly_attendance(employee_id)")
-            .eq("payroll_id", payrollId);
-
-        if (!existingEntriesError && existingEntries) {
-          for (const entry of existingEntries) {
-            const ma = entry.monthly_attendance;
-            if (ma) {
-              if (Array.isArray(ma)) {
-                if (ma[0]?.employee_id) {
-                  existingEmployeeIds.add(ma[0].employee_id);
-                }
-              } else if (ma.employee_id) {
-                existingEmployeeIds.add(ma.employee_id);
-              }
-            }
-          }
-        }
-      }
-
-      const normalize = (val: any) =>
-        String(val || "")
-          .toLowerCase()
-          .trim()
-          .replace(/[^a-z0-9]/g, "");
-
-      let currentSiteName: string | null = null;
-
-      const newEnrichedData = importData.data.map((item: any) => {
-        const rawName = (item as any).employee_name || "";
-        const normalizedRawName = normalizeSiteName(rawName);
-
-        // 1. Check if the row's Name column matches any database site name
-        const nameMatchingSite = allSites.find((s) => {
-          const normalizedSite = normalizeSiteName(s.name);
-          return (
-            normalizedSite &&
-            normalizedRawName &&
-            (normalizedRawName === normalizedSite ||
-              normalizedRawName.includes(normalizedSite) ||
-              normalizedSite.includes(normalizedRawName))
-          );
-        });
-
-        // 2. Check if any cell in the raw row matches any database site name
-        let cellMatchingSiteName: string | null = null;
-        const rawRow = (item as any).raw_row || {};
-        const cells = Object.values(rawRow).map((v) => String(v || "").trim());
-        for (const cell of cells) {
-          if (!cell) continue;
-          const normalizedCell = normalizeSiteName(cell);
-          const matchedSite = allSites.find((s) => {
-            const normalizedSite = normalizeSiteName(s.name);
-            return (
-              normalizedSite &&
-              normalizedCell &&
-              (normalizedCell === normalizedSite ||
-                normalizedCell.includes(normalizedSite) ||
-                normalizedSite.includes(normalizedCell))
-            );
-          });
-          if (matchedSite) {
-            cellMatchingSiteName = matchedSite.name;
-            break;
-          }
-        }
-
-        // If we found a site name in this row, update currentSiteName
-        if (nameMatchingSite) {
-          currentSiteName = nameMatchingSite.name;
-        } else if (cellMatchingSiteName) {
-          currentSiteName = cellMatchingSiteName;
-        }
-
-        // A row is a site header if the name matches a site name AND it has no code/UAN
-        const isCodeEmpty =
-          !(item as any).employee_code ||
-          String((item as any).employee_code).trim() === "";
-        const isUanEmpty =
-          !(item as any).uan_number ||
-          String((item as any).uan_number).trim() === "";
-        const isSiteHeader = !!nameMatchingSite && isCodeEmpty && isUanEmpty;
-
-        if (isSiteHeader) {
-          return {
-            ...item,
-            is_site_header: true,
-            is_new_employee: false,
-            is_missing_matching_key: false,
-            employee_id: null,
-            has_existing_salary_entry: false,
-          };
-        }
-
-        const itemCode = normalize(item.employee_code);
-        const itemUan = normalize(item.uan_number);
-        const itemEsic = normalize(item.esic_number);
-        const sheetName = item.sheet_name;
-        const activeSite = currentSiteName || sheetName;
-
-        const matchedData = allEmps?.find((e) => {
-          if (
-            isValidIdentifier(item.employee_code) &&
-            isValidIdentifier(e.employee_code) &&
-            normalize(e.employee_code) === itemCode
-          )
-            return true;
-
-          const statutoryDetails = Array.isArray(e.employee_statutory_details)
-            ? e.employee_statutory_details[0]
-            : e.employee_statutory_details;
-
-          const uan = statutoryDetails?.uan_number;
-          if (
-            isValidIdentifier(item.uan_number) &&
-            isValidIdentifier(uan) &&
-            normalize(uan) === itemUan
-          )
-            return true;
-
-          const esic = statutoryDetails?.esic_number;
-          if (
-            isValidIdentifier(item.esic_number) &&
-            isValidIdentifier(esic) &&
-            normalize(esic) === itemEsic
-          )
-            return true;
-
-          return false;
-        });
-
-        // Fallback to name matching if code/uan/esic match failed and name is available
-        let finalMatchedData = matchedData;
-        if (!finalMatchedData && item.employee_name) {
-          const itemNameWords = getNormalizedWords(item.employee_name);
-          if (itemNameWords.length > 0) {
-            let candidates = allEmps
-              ?.map((e) => {
-                const dbWords = getNormalizedWords(
-                  `${e.first_name} ${e.middle_name || ""} ${e.last_name || ""}`,
-                );
-
-                if (itemNameWords.length === 0 || dbWords.length === 0)
-                  return null;
-
-                const inputSet = new Set(itemNameWords);
-                const targetSet = new Set(dbWords);
-
-                const common = itemNameWords.filter((w) => targetSet.has(w));
-                const inputLeftovers = itemNameWords.filter(
-                  (w) => !targetSet.has(w),
-                );
-                const targetLeftovers = dbWords.filter((w) => !inputSet.has(w));
-
-                const isExact =
-                  inputLeftovers.length === 0 && targetLeftovers.length === 0;
-                if (isExact) {
-                  return { employee: e, score: 0 };
-                }
-
-                const minCommon = Math.min(
-                  itemNameWords.length,
-                  dbWords.length,
-                  2,
-                );
-                const w1 = inputLeftovers[0];
-                const w2 = targetLeftovers[0];
-                const hasInitialMatch =
-                  inputLeftovers.length === 1 &&
-                  targetLeftovers.length === 1 &&
-                  w1 &&
-                  w2 &&
-                  ((w1.length === 1 && w2.startsWith(w1)) ||
-                    (w2.length === 1 && w1.startsWith(w2)));
-
-                const adjustedMinCommon = hasInitialMatch ? 1 : minCommon;
-                if (common.length < adjustedMinCommon) return null;
-
-                if (inputLeftovers.length <= 1 && targetLeftovers.length <= 1) {
-                  if (
-                    inputLeftovers.length === 0 ||
-                    targetLeftovers.length === 0
-                  ) {
-                    const leftoversCount =
-                      inputLeftovers.length + targetLeftovers.length;
-                    return { employee: e, score: 10 + leftoversCount };
-                  }
-                  const w1 = inputLeftovers[0];
-                  const w2 = targetLeftovers[0];
-                  if (
-                    (w1.length === 1 && w2.startsWith(w1)) ||
-                    (w2.length === 1 && w1.startsWith(w2))
-                  ) {
-                    return { employee: e, score: 5 };
-                  }
-                }
-                return null;
-              })
-              .filter((c): c is { employee: any; score: number } => c !== null);
-
-            if (candidates && candidates.length > 0) {
-              if (activeSite && isSheetNameASite(activeSite)) {
-                candidates = candidates.filter((c) => {
-                  const candidateSiteNames = getEmployeeSiteNames(c.employee);
-                  if (candidateSiteNames.length === 0) return true;
-                  return isSiteMatch(activeSite, candidateSiteNames);
-                });
-
-                candidates.sort((a, b) => {
-                  const aSiteNames = getEmployeeSiteNames(a.employee);
-                  const bSiteNames = getEmployeeSiteNames(b.employee);
-                  const aMatch =
-                    aSiteNames.length > 0 &&
-                    isSiteMatch(activeSite, aSiteNames);
-                  const bMatch =
-                    bSiteNames.length > 0 &&
-                    isSiteMatch(activeSite, bSiteNames);
-
-                  if (aMatch && !bMatch) return -1;
-                  if (!aMatch && bMatch) return 1;
-
-                  return a.score - b.score;
-                });
-              } else {
-                candidates.sort((a, b) => a.score - b.score);
-              }
-
-              if (candidates.length > 0) {
-                finalMatchedData = candidates[0].employee;
-              }
-            }
-          }
-        }
-
-        const employeeId = finalMatchedData?.id || null;
-        const hasExistingSalaryEntry = employeeId
-          ? existingEmployeeIds.has(employeeId)
-          : false;
-
-        return {
-          ...item,
-          employee_name: finalMatchedData
-            ? `${finalMatchedData.first_name} ${finalMatchedData.middle_name || ""} ${finalMatchedData.last_name || ""}`
-                .replace(/\s+/g, " ")
-                .trim()
-            : item.employee_name || "Unknown",
-          employee_code: finalMatchedData
-            ? finalMatchedData.employee_code
-            : item.employee_code,
-          uan_number:
-            item.uan_number ||
-            (finalMatchedData &&
-            "employee_statutory_details" in finalMatchedData
-              ? Array.isArray(finalMatchedData.employee_statutory_details)
-                ? (finalMatchedData.employee_statutory_details[0] as any)
-                    ?.uan_number
-                : (finalMatchedData.employee_statutory_details as any)
-                    ?.uan_number
-              : undefined),
-          is_new_employee: !finalMatchedData,
-          employee_id: employeeId,
-          has_existing_salary_entry: hasExistingSalaryEntry,
-        };
-      });
-
-      if (newEnrichedData && active) {
-        setEnrichedData(newEnrichedData);
+      if (active) {
+        setAllEmps(emps);
+        setAllSites(sitesData || []);
       }
     }
 
-    fetchEmployeeDetails();
-
+    fetchCompanyMasterData();
     return () => {
       active = false;
     };
-  }, [importData.data, supabase, refreshTrigger, companyId, payrollId]);
+  }, [supabase, companyId, refreshTrigger]);
+
+  // Fetch existing salary entries for payrollId to detect existing records
+  useEffect(() => {
+    let active = true;
+    async function fetchExistingEntries() {
+      if (!currentPayrollId) {
+        setExistingEmployeeIds(new Set());
+        return;
+      }
+      const { data: existingEntries, error } = await supabase
+        .from("salary_entries")
+        .select("monthly_attendance(employee_id)")
+        .eq("payroll_id", currentPayrollId);
+
+      if (!error && existingEntries && active) {
+        const empIds = new Set<string>();
+        for (const entry of existingEntries) {
+          const ma = entry.monthly_attendance;
+          if (ma) {
+            if (Array.isArray(ma)) {
+              if (ma[0]?.employee_id) empIds.add(ma[0].employee_id);
+            } else if ((ma as any).employee_id) {
+              empIds.add((ma as any).employee_id);
+            }
+          }
+        }
+        setExistingEmployeeIds(empIds);
+      }
+    }
+
+    fetchExistingEntries();
+    return () => {
+      active = false;
+    };
+  }, [currentPayrollId, supabase]);
+
+  // Helpers for employee and site matching
+  const normalizeSiteName = useCallback((name: any) => {
+    return String(name || "")
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]/g, "");
+  }, []);
+
+  const getNormalizedWords = useCallback((val: any) => {
+    if (!val) return [];
+    let s = String(val).toLowerCase();
+    s = s.replace(/\bnull\b/g, "");
+    return s
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 0)
+      .sort();
+  }, []);
+
+  const getEmployeeSiteNames = useCallback((emp: any): string[] => {
+    if (!emp.work_details) return [];
+    const wds = Array.isArray(emp.work_details)
+      ? emp.work_details
+      : [emp.work_details];
+    return wds
+      .map((wd: any) => wd?.sites?.name || wd?.site?.name)
+      .filter(Boolean);
+  }, []);
+
+  const isSiteMatch = useCallback(
+    (sheetName: string, siteNames: string[]) => {
+      if (!sheetName || siteNames.length === 0) return false;
+      const normalizedSheet = normalizeSiteName(sheetName);
+      if (!normalizedSheet) return false;
+
+      return siteNames.some((siteName) => {
+        const normalizedSite = normalizeSiteName(siteName);
+        if (!normalizedSite) return false;
+        return (
+          normalizedSheet === normalizedSite ||
+          normalizedSheet.includes(normalizedSite) ||
+          normalizedSite.includes(normalizedSheet)
+        );
+      });
+    },
+    [normalizeSiteName],
+  );
+
+  const isSheetNameASite = useCallback(
+    (sheetName: string) => {
+      if (!sheetName) return false;
+      const allSiteNames = allSites.map((s) => s.name).filter(Boolean);
+      return isSiteMatch(sheetName, allSiteNames);
+    },
+    [allSites, isSiteMatch],
+  );
+
+  // Derive enrichedData for activeSheet.records
+  const enrichedData = useMemo(() => {
+    const normalize = (val: any) =>
+      String(val || "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]/g, "");
+
+    let currentSiteName: string | null = null;
+
+    return activeRecords.map((item: any) => {
+      const rawName = (item as any).employee_name || "";
+      const normalizedRawName = normalizeSiteName(rawName);
+
+      // 1. Check if the row's Name column matches any database site name
+      const nameMatchingSite = allSites.find((s) => {
+        const normalizedSite = normalizeSiteName(s.name);
+        return (
+          normalizedSite &&
+          normalizedRawName &&
+          (normalizedRawName === normalizedSite ||
+            normalizedRawName.includes(normalizedSite) ||
+            normalizedSite.includes(normalizedRawName))
+        );
+      });
+
+      // 2. Check if any cell in the raw row matches any database site name
+      let cellMatchingSiteName: string | null = null;
+      const rawRow = (item as any).raw_row || {};
+      const cells = Object.values(rawRow).map((v) => String(v || "").trim());
+      for (const cell of cells) {
+        if (!cell) continue;
+        const normalizedCell = normalizeSiteName(cell);
+        const matchedSite = allSites.find((s) => {
+          const normalizedSite = normalizeSiteName(s.name);
+          return (
+            normalizedSite &&
+            normalizedCell &&
+            (normalizedCell === normalizedSite ||
+              normalizedCell.includes(normalizedSite) ||
+              normalizedSite.includes(normalizedCell))
+          );
+        });
+        if (matchedSite) {
+          cellMatchingSiteName = matchedSite.name;
+          break;
+        }
+      }
+
+      if (nameMatchingSite) {
+        currentSiteName = nameMatchingSite.name;
+      } else if (cellMatchingSiteName) {
+        currentSiteName = cellMatchingSiteName;
+      }
+
+      const isCodeEmpty =
+        !(item as any).employee_code ||
+        String((item as any).employee_code).trim() === "";
+      const isUanEmpty =
+        !(item as any).uan_number ||
+        String((item as any).uan_number).trim() === "";
+      const isSiteHeader = !!nameMatchingSite && isCodeEmpty && isUanEmpty;
+
+      if (isSiteHeader) {
+        return {
+          ...item,
+          is_site_header: true,
+          is_new_employee: false,
+          is_missing_matching_key: false,
+          employee_id: null,
+          has_existing_salary_entry: false,
+        };
+      }
+
+      const itemCode = normalize(item.employee_code);
+      const itemUan = normalize(item.uan_number);
+      const itemEsic = normalize(item.esic_number);
+      const sheetName = item.sheet_name || activeSheet?.sheetName;
+      const activeSite = currentSiteName || sheetName;
+
+      const matchedData = allEmps?.find((e) => {
+        if (
+          isValidIdentifier(item.employee_code) &&
+          isValidIdentifier(e.employee_code) &&
+          normalize(e.employee_code) === itemCode
+        )
+          return true;
+
+        const statutoryDetails = Array.isArray(e.employee_statutory_details)
+          ? e.employee_statutory_details[0]
+          : e.employee_statutory_details;
+
+        const uan = statutoryDetails?.uan_number;
+        if (
+          isValidIdentifier(item.uan_number) &&
+          isValidIdentifier(uan) &&
+          normalize(uan) === itemUan
+        )
+          return true;
+
+        const esic = statutoryDetails?.esic_number;
+        if (
+          isValidIdentifier(item.esic_number) &&
+          isValidIdentifier(esic) &&
+          normalize(esic) === itemEsic
+        )
+          return true;
+
+        return false;
+      });
+
+      let finalMatchedData = matchedData;
+      if (!finalMatchedData && item.employee_name) {
+        const itemNameWords = getNormalizedWords(item.employee_name);
+        if (itemNameWords.length > 0) {
+          let candidates = allEmps
+            ?.map((e) => {
+              const dbWords = getNormalizedWords(
+                `${e.first_name} ${e.middle_name || ""} ${e.last_name || ""}`,
+              );
+
+              if (itemNameWords.length === 0 || dbWords.length === 0)
+                return null;
+
+              const inputSet = new Set(itemNameWords);
+              const targetSet = new Set(dbWords);
+
+              const common = itemNameWords.filter((w) => targetSet.has(w));
+              const inputLeftovers = itemNameWords.filter(
+                (w) => !targetSet.has(w),
+              );
+              const targetLeftovers = dbWords.filter((w) => !inputSet.has(w));
+
+              const isExact =
+                inputLeftovers.length === 0 && targetLeftovers.length === 0;
+              if (isExact) {
+                return { employee: e, score: 0 };
+              }
+
+              const minCommon = Math.min(
+                itemNameWords.length,
+                dbWords.length,
+                2,
+              );
+              const w1 = inputLeftovers[0];
+              const w2 = targetLeftovers[0];
+              const hasInitialMatch =
+                inputLeftovers.length === 1 &&
+                targetLeftovers.length === 1 &&
+                w1 &&
+                w2 &&
+                ((w1.length === 1 && w2.startsWith(w1)) ||
+                  (w2.length === 1 && w1.startsWith(w2)));
+
+              const adjustedMinCommon = hasInitialMatch ? 1 : minCommon;
+              if (common.length < adjustedMinCommon) return null;
+
+              if (inputLeftovers.length <= 1 && targetLeftovers.length <= 1) {
+                if (
+                  inputLeftovers.length === 0 ||
+                  targetLeftovers.length === 0
+                ) {
+                  const leftoversCount =
+                    inputLeftovers.length + targetLeftovers.length;
+                  return { employee: e, score: 10 + leftoversCount };
+                }
+                const w1_inner = inputLeftovers[0];
+                const w2_inner = targetLeftovers[0];
+                if (
+                  (w1_inner.length === 1 && w2_inner.startsWith(w1_inner)) ||
+                  (w2_inner.length === 1 && w1_inner.startsWith(w2_inner))
+                ) {
+                  return { employee: e, score: 5 };
+                }
+              }
+              return null;
+            })
+            .filter((c): c is { employee: any; score: number } => c !== null);
+
+          if (candidates && candidates.length > 0) {
+            if (activeSite && isSheetNameASite(activeSite)) {
+              candidates = candidates.filter((c) => {
+                const candidateSiteNames = getEmployeeSiteNames(c.employee);
+                if (candidateSiteNames.length === 0) return true;
+                return isSiteMatch(activeSite, candidateSiteNames);
+              });
+
+              candidates.sort((a, b) => {
+                const aSiteNames = getEmployeeSiteNames(a.employee);
+                const bSiteNames = getEmployeeSiteNames(b.employee);
+                const aMatch =
+                  aSiteNames.length > 0 && isSiteMatch(activeSite, aSiteNames);
+                const bMatch =
+                  bSiteNames.length > 0 && isSiteMatch(activeSite, bSiteNames);
+
+                if (aMatch && !bMatch) return -1;
+                if (!aMatch && bMatch) return 1;
+
+                return a.score - b.score;
+              });
+            } else {
+              candidates.sort((a, b) => a.score - b.score);
+            }
+
+            if (candidates.length > 0) {
+              finalMatchedData = candidates[0].employee;
+            }
+          }
+        }
+      }
+
+      const employeeId = finalMatchedData?.id || null;
+      const hasExistingSalaryEntry = employeeId
+        ? existingEmployeeIds.has(employeeId)
+        : false;
+
+      return {
+        ...item,
+        employee_name: finalMatchedData
+          ? `${finalMatchedData.first_name} ${finalMatchedData.middle_name || ""} ${finalMatchedData.last_name || ""}`
+              .replace(/\s+/g, " ")
+              .trim()
+          : item.employee_name || "Unknown",
+        employee_code: finalMatchedData
+          ? finalMatchedData.employee_code
+          : item.employee_code,
+        uan_number:
+          item.uan_number ||
+          (finalMatchedData && "employee_statutory_details" in finalMatchedData
+            ? Array.isArray(finalMatchedData.employee_statutory_details)
+              ? (finalMatchedData.employee_statutory_details[0] as any)
+                  ?.uan_number
+              : (finalMatchedData.employee_statutory_details as any)?.uan_number
+            : undefined),
+        is_new_employee: !finalMatchedData,
+        employee_id: employeeId,
+        has_existing_salary_entry: hasExistingSalaryEntry,
+      };
+    });
+  }, [
+    activeRecords,
+    allEmps,
+    allSites,
+    activeSheet?.sheetName,
+    existingEmployeeIds,
+    getEmployeeSiteNames,
+    getNormalizedWords,
+    isSheetNameASite,
+    isSiteMatch,
+    normalizeSiteName,
+  ]);
+
+  // Filter enriched data with searchString for the table
+  const tableData = useMemo(() => {
+    if (!searchString.trim()) {
+      return enrichedData.filter((item) => !item.is_site_header);
+    }
+    const lower = searchString.toLowerCase();
+    return enrichedData
+      .filter((item) => !item.is_site_header)
+      .filter((item) =>
+        Object.entries(item).some(
+          ([key, value]) =>
+            key !== "avatar" &&
+            key !== "employee_id" &&
+            key !== "is_new_employee" &&
+            key !== "has_existing_salary_entry" &&
+            String(value).toLowerCase().includes(lower),
+        ),
+      );
+  }, [enrichedData, searchString]);
 
   const unmatchedEmployees = useMemo(() => {
     const unmatched = enrichedData
@@ -510,35 +694,517 @@ export function SalaryPayrollImportData({
   };
 
   useEffect(() => {
-    const dataToFilter =
-      enrichedData.length > 0 ? enrichedData : importData.data;
-    const filteredData = dataToFilter
-      ?.filter((item) => !item.is_site_header)
-      ?.filter((item) =>
-        Object.entries(item).some(
-          ([key, value]) =>
-            key !== "avatar" &&
-            key !== "employee_id" &&
-            key !== "is_new_employee" &&
-            key !== "has_existing_salary_entry" &&
-            String(value).toLowerCase().includes(searchString.toLowerCase()),
-        ),
-      );
-    setTableData(filteredData);
-  }, [searchString, enrichedData, importData]);
-
-  useEffect(() => {
     if (navigation.state === "idle" && isImporting) {
       setIsImporting(false);
     }
   }, [navigation.state, isImporting]);
 
+  // Pure cell value updater
+  const updateCellValue = useCallback(
+    (
+      item: any,
+      colKey: string,
+      rawNewValue: string | number,
+      fieldConfigsList: FieldConfig[],
+    ) => {
+      const newItem = { ...item };
+      const config = fieldConfigsList.find((f) => f.key === colKey);
+      const isDeduction =
+        config?.type === "deduction" ||
+        ["pf", "esic", "pt", "lwf", "deduction", "advance", "expense"].includes(
+          colKey,
+        );
+      const isEarning =
+        config?.type === "earning" ||
+        (!isDeduction &&
+          ![
+            "employee_name",
+            "employee_code",
+            "uan_number",
+            "uan_no",
+            "esic_number",
+            "esic_no",
+            "working_days",
+            "present_days",
+            "ph",
+            "pl",
+            "cl",
+            "ml",
+            "el",
+            "ot_hours",
+            "ot_days",
+            "sheet_name",
+            "raw_row",
+            "avatar",
+            "employee_id",
+            "is_new_employee",
+            "has_existing_salary_entry",
+          ].includes(colKey));
+
+      if (isEarning || isDeduction) {
+        const existingVal = item[colKey];
+        const oldAmount = getRecordAmount(existingVal);
+        const parsedAmount =
+          typeof rawNewValue === "number"
+            ? rawNewValue
+            : Number(
+                String(rawNewValue || "")
+                  .trim()
+                  .replace(/,/g, ""),
+              ) || 0;
+        const delta = parsedAmount - oldAmount;
+
+        newItem[colKey] = {
+          amount: parsedAmount,
+          type: isDeduction ? "deduction" : "earning",
+          consider_for_epf: existingVal?.consider_for_epf ?? false,
+          consider_for_esic: existingVal?.consider_for_esic ?? false,
+        };
+
+        if (delta !== 0) {
+          const lowerColKey = colKey.toLowerCase();
+          if (
+            isEarning &&
+            lowerColKey !== "gross" &&
+            lowerColKey !== "net_pay"
+          ) {
+            if ("gross" in newItem) {
+              const curGross = getRecordAmount(newItem.gross);
+              newItem.gross = setRecordAmount(
+                newItem.gross,
+                curGross + delta,
+                "earning",
+              );
+            }
+            if ("net_pay" in newItem) {
+              const curNet = getRecordAmount(newItem.net_pay);
+              newItem.net_pay = setRecordAmount(
+                newItem.net_pay,
+                Math.max(0, curNet + delta),
+                "earning",
+              );
+            }
+          } else if (
+            isDeduction &&
+            lowerColKey !== "total_deductions" &&
+            lowerColKey !== "total_deduction" &&
+            lowerColKey !== "deduction"
+          ) {
+            const dedKey =
+              "total_deductions" in newItem
+                ? "total_deductions"
+                : "total_deduction" in newItem
+                  ? "total_deduction"
+                  : "deduction" in newItem
+                    ? "deduction"
+                    : null;
+            if (dedKey) {
+              const curDed = getRecordAmount(newItem[dedKey]);
+              newItem[dedKey] = setRecordAmount(
+                newItem[dedKey],
+                curDed + delta,
+                "deduction",
+              );
+            }
+            if ("net_pay" in newItem) {
+              const curNet = getRecordAmount(newItem.net_pay);
+              newItem.net_pay = setRecordAmount(
+                newItem.net_pay,
+                Math.max(0, curNet - delta),
+                "earning",
+              );
+            }
+          }
+        }
+      } else if (
+        [
+          "working_days",
+          "present_days",
+          "ph",
+          "pl",
+          "cl",
+          "ml",
+          "el",
+          "ot_hours",
+          "ot_days",
+        ].includes(colKey)
+      ) {
+        const parsed =
+          typeof rawNewValue === "number"
+            ? rawNewValue
+            : Number.isNaN(Number(rawNewValue))
+              ? rawNewValue
+              : Number(rawNewValue);
+        newItem[colKey] = parsed;
+      } else {
+        const strVal = String(rawNewValue ?? "").trim();
+        newItem[colKey] = strVal;
+        if (colKey === "uan_number") newItem.uan_no = strVal;
+        if (colKey === "esic_number") newItem.esic_no = strVal;
+        if (colKey === "uan_no") newItem.uan_number = strVal;
+        if (colKey === "esic_no") newItem.esic_number = strVal;
+      }
+
+      return newItem;
+    },
+    [],
+  );
+
+  // Cell change handler
+  const handleCellChange = useCallback(
+    (rowIndex: number, colKey: string, rawNewValue: string) => {
+      setSheetsData((prevSheets) => {
+        const updated = [...prevSheets];
+        const sheet = { ...updated[activeSheetIndex] };
+        const records = [...sheet.records];
+        if (rowIndex >= 0 && rowIndex < records.length) {
+          records[rowIndex] = updateCellValue(
+            records[rowIndex],
+            colKey,
+            rawNewValue,
+            activeFieldConfigs,
+          );
+          sheet.records = records;
+          updated[activeSheetIndex] = sheet;
+        }
+        return updated;
+      });
+    },
+    [activeSheetIndex, activeFieldConfigs, updateCellValue],
+  );
+
+  // Bulk cell change handler (e.g. from copy-paste)
+  const handleBulkChange = useCallback(
+    (
+      updates: Array<{ rowIndex: number; colKey: string; newValue: string }>,
+    ) => {
+      setSheetsData((prevSheets) => {
+        const updated = [...prevSheets];
+        const sheet = { ...updated[activeSheetIndex] };
+        const records = [...sheet.records];
+        for (const { rowIndex, colKey, newValue } of updates) {
+          if (rowIndex >= 0 && rowIndex < records.length) {
+            records[rowIndex] = updateCellValue(
+              records[rowIndex],
+              colKey,
+              newValue,
+              activeFieldConfigs,
+            );
+          }
+        }
+        sheet.records = records;
+        updated[activeSheetIndex] = sheet;
+        return updated;
+      });
+    },
+    [activeSheetIndex, activeFieldConfigs, updateCellValue],
+  );
+
+  // Switch sheet handler: preserves all changes of current and target sheet
+  const handleSwitchSheet = useCallback(
+    (targetIndex: number) => {
+      if (targetIndex >= 0 && targetIndex < sheetsData.length) {
+        setActiveSheetIndex(targetIndex);
+        setSearchString("");
+        setImportData({
+          ...importData,
+          data: sheetsData[targetIndex].records,
+        });
+      }
+    },
+    [sheetsData, importData, setImportData],
+  );
+
+  // Add Column handler
+  const confirmAddColumn = () => {
+    const cleanName = newColName.trim();
+    if (!cleanName) return;
+    const colKey = cleanName.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+
+    if (activeFieldConfigs.some((f) => f.key.toLowerCase() === colKey)) {
+      toast({
+        title: "Column Already Exists",
+        description: `Column "${cleanName}" already exists on this sheet.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const defaultAmount = Number(newColDefaultAmount) || 0;
+    const colType = (newColType === "deduction" ? "deduction" : "earning") as
+      | "earning"
+      | "deduction";
+
+    setSheetsData((prevSheets) => {
+      const updated = [...prevSheets];
+      const sheet = { ...updated[activeSheetIndex] };
+
+      const insertIndex = getInsertIndexForNewColumn(
+        sheet.fieldConfigs,
+        colType,
+      );
+      const newConfigs: FieldConfig[] = [...sheet.fieldConfigs];
+      newConfigs.splice(insertIndex, 0, { key: colKey, type: colType });
+
+      const newRecords = sheet.records.map((rec) => {
+        const newRec = {
+          ...rec,
+          [colKey]: {
+            amount: defaultAmount,
+            type: colType,
+            consider_for_epf: false,
+            consider_for_esic: false,
+          },
+        };
+
+        if (defaultAmount !== 0) {
+          if (colType === "earning") {
+            // "if it s earning then it should be just before left side of gross and gross value should increase with new column value and same for net pay"
+            if ("gross" in newRec) {
+              const curGross = getRecordAmount(newRec.gross);
+              newRec.gross = setRecordAmount(
+                newRec.gross,
+                curGross + defaultAmount,
+                "earning",
+              );
+            }
+            if ("net_pay" in newRec) {
+              const curNet = getRecordAmount(newRec.net_pay);
+              newRec.net_pay = setRecordAmount(
+                newRec.net_pay,
+                curNet + defaultAmount,
+                "earning",
+              );
+            }
+          } else {
+            // "and same in deduction it should be just beside deduction, deduction total increase and net pay change accordingly"
+            const dedKey =
+              "total_deductions" in newRec
+                ? "total_deductions"
+                : "total_deduction" in newRec
+                  ? "total_deduction"
+                  : "deduction" in newRec
+                    ? "deduction"
+                    : null;
+            if (dedKey) {
+              const curDed = getRecordAmount(newRec[dedKey]);
+              newRec[dedKey] = setRecordAmount(
+                newRec[dedKey],
+                curDed + defaultAmount,
+                "deduction",
+              );
+            }
+            if ("net_pay" in newRec) {
+              const curNet = getRecordAmount(newRec.net_pay);
+              newRec.net_pay = setRecordAmount(
+                newRec.net_pay,
+                Math.max(0, curNet - defaultAmount),
+                "earning",
+              );
+            }
+          }
+        }
+
+        return newRec;
+      });
+
+      sheet.fieldConfigs = newConfigs;
+      sheet.records = newRecords;
+      updated[activeSheetIndex] = sheet;
+      return updated;
+    });
+
+    toast({
+      title: "Column Added",
+      description: `Added "${cleanName}" (${colType}) to sheet "${activeSheet.sheetName}".`,
+      variant: "success",
+    });
+
+    setIsAddColOpen(false);
+    setNewColName("");
+    setNewColDefaultAmount(0);
+  };
+
+  // Delete Column handler
+  const confirmDeleteColumn = () => {
+    if (!colToDelete) return;
+    const targetKey = colToDelete.toLowerCase();
+    const targetConfig = activeFieldConfigs.find(
+      (f) => f.key.toLowerCase() === targetKey,
+    );
+    const isEarning =
+      targetConfig?.type === "earning" &&
+      targetKey !== "gross" &&
+      targetKey !== "net_pay";
+    const isDeduction =
+      targetConfig?.type === "deduction" &&
+      targetKey !== "total_deductions" &&
+      targetKey !== "total_deduction" &&
+      targetKey !== "deduction";
+
+    setSheetsData((prevSheets) => {
+      const updated = [...prevSheets];
+      const sheet = { ...updated[activeSheetIndex] };
+      const newConfigs = sheet.fieldConfigs.filter(
+        (f) => f.key.toLowerCase() !== targetKey,
+      );
+      const newRecords = sheet.records.map((rec) => {
+        const copy = { ...rec };
+        const colVal = copy[targetKey];
+        const removedAmount = getRecordAmount(colVal);
+
+        if (removedAmount !== 0) {
+          if (isEarning) {
+            if ("gross" in copy) {
+              const curGross = getRecordAmount(copy.gross);
+              copy.gross = setRecordAmount(
+                copy.gross,
+                Math.max(0, curGross - removedAmount),
+                "earning",
+              );
+            }
+            if ("net_pay" in copy) {
+              const curNet = getRecordAmount(copy.net_pay);
+              copy.net_pay = setRecordAmount(
+                copy.net_pay,
+                Math.max(0, curNet - removedAmount),
+                "earning",
+              );
+            }
+          } else if (isDeduction) {
+            const dedKey =
+              "total_deductions" in copy
+                ? "total_deductions"
+                : "total_deduction" in copy
+                  ? "total_deduction"
+                  : "deduction" in copy
+                    ? "deduction"
+                    : null;
+            if (dedKey) {
+              const curDed = getRecordAmount(copy[dedKey]);
+              copy[dedKey] = setRecordAmount(
+                copy[dedKey],
+                Math.max(0, curDed - removedAmount),
+                "deduction",
+              );
+            }
+            if ("net_pay" in copy) {
+              const curNet = getRecordAmount(copy.net_pay);
+              copy.net_pay = setRecordAmount(
+                copy.net_pay,
+                curNet + removedAmount,
+                "earning",
+              );
+            }
+          }
+        }
+
+        delete copy[targetKey];
+        return copy;
+      });
+      sheet.fieldConfigs = newConfigs;
+      sheet.records = newRecords;
+      updated[activeSheetIndex] = sheet;
+      return updated;
+    });
+
+    toast({
+      title: "Column Deleted",
+      description: `Column "${colToDelete}" removed from sheet "${activeSheet.sheetName}".`,
+      variant: "success",
+    });
+
+    setColToDelete(null);
+  };
+
+  // Bulk Delete Rows handler
+  const confirmBulkDelete = () => {
+    if (deleteConfirmText !== "DELETE" || indicesToDelete.length === 0) return;
+
+    setSheetsData((prevSheets) => {
+      const updated = [...prevSheets];
+      const sheet = { ...updated[activeSheetIndex] };
+      const targetSet = new Set(indicesToDelete);
+      // Strictly preserves original Excel relative order
+      const remaining = sheet.records.filter((_, idx) => !targetSet.has(idx));
+      sheet.records = remaining;
+      updated[activeSheetIndex] = sheet;
+      return updated;
+    });
+
+    toast({
+      title: "Rows Deleted",
+      description: `Removed ${indicesToDelete.length} row(s) from sheet "${activeSheet.sheetName}".`,
+      variant: "success",
+    });
+
+    setIsBulkDeleteOpen(false);
+    setDeleteConfirmText("");
+    setIndicesToDelete([]);
+  };
+
+  // Bulk Update Column handler
+  const confirmBulkUpdate = () => {
+    if (!bulkColKey || bulkValue === "") return;
+
+    setSheetsData((prevSheets) => {
+      const updated = [...prevSheets];
+      const sheet = { ...updated[activeSheetIndex] };
+      const targetSet =
+        bulkScope === "selected" ? new Set(selectedIndicesForBulk) : null;
+
+      const records = sheet.records.map((rec, idx) => {
+        if (targetSet && !targetSet.has(idx)) return rec;
+        return updateCellValue(rec, bulkColKey, bulkValue, activeFieldConfigs);
+      });
+
+      sheet.records = records;
+      updated[activeSheetIndex] = sheet;
+      return updated;
+    });
+
+    const count =
+      bulkScope === "selected"
+        ? selectedIndicesForBulk.length
+        : activeSheet.records.length;
+
+    toast({
+      title: "Bulk Update Applied",
+      description: `Updated column "${bulkColKey}" for ${count} row(s).`,
+      variant: "success",
+    });
+
+    setIsBulkUpdateOpen(false);
+    setBulkValue("");
+    setBulkColKey("");
+  };
+
+  // Editable columns for Bulk Update dialog
+  const editableColOptions = useMemo(() => {
+    return activeFieldConfigs
+      .filter((f) => f.key !== "sr_no" && f.key !== "select")
+      .map((f) => ({
+        label: replaceUnderscore(f.key) || f.key,
+        value: f.key,
+      }));
+  }, [activeFieldConfigs]);
+
+  // Sheet-by-sheet import handler
   const handleFinalImport = async () => {
+    if (activeSheet.isImported && activeSheet.records.length === 0) {
+      toast({
+        title: "Already Imported",
+        description: `Sheet "${activeSheet.sheetName}" is already imported.`,
+        variant: "success",
+      });
+      return;
+    }
+
     if (unmatchedEmployees.length > 0) {
       setShowUnmatchedView(true);
       toast({
         title: "Unmatched Employees Detected",
-        description: `Please register all ${unmatchedEmployees.length} unmatched employee(s) before importing payroll.`,
+        description: `Please register or skip all ${unmatchedEmployees.length} unmatched employee(s) before importing.`,
         variant: "warning",
       });
       return;
@@ -546,16 +1212,81 @@ export function SalaryPayrollImportData({
 
     setIsImporting(true);
 
-    const isOverwrite = importData.intent === "overwrite";
+    try {
+      const isOverwrite = importData.intent === "overwrite";
 
-    const updatedData = enrichedData
-      .filter(
+      // Rows eligible for import
+      const readyRows = enrichedData.filter(
         (item) =>
           item.employee_id &&
           (isOverwrite || !item.has_existing_salary_entry) &&
           !item.is_site_header,
-      )
-      .map((item) => {
+      );
+
+      if (readyRows.length === 0) {
+        setIsImporting(false);
+        toast({
+          title: "No Rows to Import",
+          description:
+            "There are no eligible employee records on this sheet to import. Please check matches.",
+          variant: "warning",
+        });
+        return;
+      }
+
+      // Verify attendance against existing database records
+      const resolvedEmployeeIds = readyRows.map((item) => item.employee_id);
+      const month =
+        (readyRows[0] as any)?.month || (activeSheet.records[0] as any)?.month;
+      const year =
+        (readyRows[0] as any)?.year || (activeSheet.records[0] as any)?.year;
+
+      if (month && year) {
+        const { data: existingAttendance, error: attendanceError } =
+          await getMonthlyAttendanceByEmployeeIds({
+            supabase,
+            employeeIds: resolvedEmployeeIds,
+            month,
+            year,
+          });
+
+        if (attendanceError) {
+          setIsImporting(false);
+          toast({
+            title: "Error",
+            description: "Failed to verify attendance data",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        const attendanceMap = new Map(
+          existingAttendance?.map((a) => [a.employee_id, a.present_days]),
+        );
+
+        const invalidEntries = readyRows.filter((item) => {
+          const systemPresentDays = attendanceMap.get(item.employee_id);
+          const importedPresentDays = Number(item.present_days);
+          return (
+            systemPresentDays !== undefined &&
+            systemPresentDays !== importedPresentDays
+          );
+        });
+
+        if (invalidEntries.length > 0) {
+          setIsImporting(false);
+          toast({
+            title: "Import Failed",
+            description:
+              "Attendance present day and sheet present days differ for some employees. Please update attendance.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+
+      // Clean payload
+      const cleanedData = readyRows.map((item) => {
         const {
           employee_code,
           uan_number,
@@ -563,98 +1294,139 @@ export function SalaryPayrollImportData({
           is_new_employee,
           sheet_name,
           has_existing_salary_entry,
+          avatar,
+          is_site_header,
+          raw_row,
           ...rest
         } = item;
         return rest;
       });
 
-    const updatedCount = updatedData.length;
-    const skippedCount = enrichedData.length - updatedCount;
+      const updatedCount = readyRows.length;
+      const skippedCount = activeSheet.records.length - updatedCount;
 
-    if (updatedCount === 0) {
-      setIsImporting(false);
-      toast({
-        title: "Success",
-        description: `Salary entries imported: 0 updated, ${skippedCount} skipped`,
-        variant: "success",
-      });
-      const redirectUrl = payrollId
-        ? `/payroll/run-payroll/${payrollId}`
-        : "/payroll/run-payroll";
-      navigate(redirectUrl);
-      return;
-    }
-
-    const resolvedEmployeeIds = updatedData.map((item) => item.employee_id);
-    const month = importData.data[0]?.month;
-    const year = importData.data[0]?.year;
-
-    if (month && year) {
-      const { data: existingAttendance, error: attendanceError } =
-        await getMonthlyAttendanceByEmployeeIds({
-          supabase,
-          employeeIds: resolvedEmployeeIds,
-          month,
-          year,
-        });
-
-      if (attendanceError) {
-        setIsImporting(false);
-        toast({
-          title: "Error",
-          description: "Failed to verify attendance data",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      const attendanceMap = new Map(
-        existingAttendance?.map((a) => [a.employee_id, a.present_days]),
+      const formData = new FormData();
+      formData.append(
+        "type",
+        isOverwrite ? "salary-update-import" : "salary-import",
+      );
+      formData.append(
+        "title",
+        importData.title ||
+          `Payroll ${month}/${year} - ${activeSheet.sheetName}`,
+      );
+      formData.append("salaryImportData", JSON.stringify(cleanedData));
+      formData.append("skipped", String(skippedCount));
+      formData.append("updated", String(updatedCount));
+      formData.append("different", currentPayrollId ? "different" : "no");
+      formData.append("payrollId", currentPayrollId || "");
+      formData.append(
+        "failedRedirect",
+        currentPayrollId
+          ? `/payroll/run-payroll/${currentPayrollId}`
+          : "/payroll/run-payroll",
       );
 
-      const invalidEntries = updatedData.filter((item) => {
-        const systemPresentDays = attendanceMap.get(item.employee_id);
-        const importedPresentDays = Number(item.present_days);
-        return (
-          systemPresentDays !== undefined &&
-          systemPresentDays !== importedPresentDays
-        );
+      const res = await fetch("/create-payroll", {
+        method: "POST",
+        body: formData,
       });
 
-      if (invalidEntries.length > 0) {
-        setIsImporting(false);
-        toast({
-          title: "Import Failed",
-          description:
-            "Attendance present day and your sheet present days are different. Update attendance.",
-          variant: "destructive",
-        });
-        return;
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(
+          errJson.message || errJson.error || "Failed to import payroll sheet",
+        );
       }
-    }
 
-    submit(
-      {
-        type:
-          importData.intent === "overwrite"
-            ? "salary-update-import"
-            : "salary-import",
-        title: importData.title!,
-        salaryImportData: JSON.stringify(updatedData),
-        skipped: skippedCount.toString(),
-        updated: updatedCount.toString(),
-        failedRedirect: payrollId
-          ? `/payroll/run-payroll/${payrollId}`
-          : "/payroll/run-payroll",
-        different: payrollId ? "different" : "no",
-        payrollId: payrollId ?? "",
-      },
-      {
-        method: "POST",
-        action: "/create-payroll",
-      },
-    );
+      const resJson = await res.json();
+
+      if (resJson.status === "error") {
+        throw new Error(
+          resJson.message || resJson.error || "Import failed on server",
+        );
+      }
+
+      const newPayrollId = resJson.payrollId || currentPayrollId;
+      if (newPayrollId && !currentPayrollId) {
+        setCurrentPayrollId(newPayrollId);
+      }
+
+      // Identify imported rows and remove them from activeSheet
+      const importedEmpIds = new Set(
+        readyRows.map((r) => r.employee_id).filter(Boolean),
+      );
+      const importedCodes = new Set(
+        readyRows.map((r) => r.employee_code).filter(Boolean),
+      );
+      const importedUans = new Set(
+        readyRows.map((r) => r.uan_number).filter(Boolean),
+      );
+
+      // Remaining rows strictly maintain their original Excel order
+      const remainingRecords = activeSheet.records.filter((rec: any) => {
+        if (rec.employee_id && importedEmpIds.has(rec.employee_id))
+          return false;
+        if (rec.employee_code && importedCodes.has(rec.employee_code))
+          return false;
+        if (rec.uan_number && importedUans.has(rec.uan_number)) return false;
+        return true;
+      });
+
+      const wasFullyImported = remainingRecords.length === 0;
+
+      setSheetsData((prevSheets) => {
+        const updated = [...prevSheets];
+        const sheet = { ...updated[activeSheetIndex] };
+        sheet.records = remainingRecords;
+        if (wasFullyImported) {
+          sheet.isImported = true;
+          sheet.importedCount = (sheet.importedCount || 0) + updatedCount;
+        }
+        updated[activeSheetIndex] = sheet;
+        return updated;
+      });
+
+      if (wasFullyImported) {
+        toast({
+          title: "Sheet Imported Successfully",
+          description: `Imported all ${updatedCount} employee records from "${activeSheet.sheetName}".`,
+          variant: "success",
+        });
+
+        // Find next pending sheet to switch to
+        const nextPendingIndex = sheetsData.findIndex(
+          (s, idx) => idx !== activeSheetIndex && !s.isImported,
+        );
+        if (nextPendingIndex !== -1) {
+          setActiveSheetIndex(nextPendingIndex);
+          toast({
+            title: "Next Sheet Active",
+            description: `Now displaying "${sheetsData[nextPendingIndex].sheetName}".`,
+          });
+        }
+      } else {
+        toast({
+          title: "Partial Import Complete",
+          description: `Imported ${updatedCount} records. ${remainingRecords.length} skipped or unimported row(s) remaining on "${activeSheet.sheetName}".`,
+          variant: "warning",
+        });
+        // User stays on same sheet with the remaining rows
+      }
+    } catch (err: any) {
+      console.error("Sheet import failed:", err);
+      toast({
+        title: "Import Error",
+        description: err.message || "Failed to import sheet records.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsImporting(false);
+    }
   };
+
+  const allSheetsImported =
+    sheetsData.length > 0 && sheetsData.every((s) => s.isImported);
 
   return (
     <section className="px-4 relative">
@@ -667,8 +1439,64 @@ export function SalaryPayrollImportData({
         <LoadingSpinner className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 m-0" />
       </div>
 
+      {/* Multi-Sheet Filter / Tabs switcher */}
+      {sheetsData.length > 1 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3 mb-4 bg-card border rounded-xl shadow-xs">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground mr-1 flex items-center gap-1.5">
+              <Icon name="table" size="xs" />
+              Sheets:
+            </span>
+            {sheetsData.map((sheet, idx) => {
+              const isActive = idx === activeSheetIndex;
+              return (
+                <button
+                  key={sheet.sheetName}
+                  type="button"
+                  onClick={() => handleSwitchSheet(idx)}
+                  className={cn(
+                    "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer",
+                    isActive
+                      ? "bg-primary/10 border-primary text-primary font-bold shadow-xs ring-1 ring-primary/30"
+                      : "bg-background border-border hover:bg-muted/50 text-foreground",
+                  )}
+                >
+                  <span>{sheet.sheetName}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    ({sheet.records.length})
+                  </span>
+                  {sheet.isImported ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.2 rounded-full font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
+                      <Icon name="check" size="xs" />
+                      Imported
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center text-[10px] px-1.5 py-0.2 rounded-full font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                      Pending
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="text-xs text-muted-foreground font-medium flex items-center gap-2">
+            <span>
+              Progress:{" "}
+              <strong className="text-foreground">
+                {sheetsData.filter((s) => s.isImported).length}
+              </strong>{" "}
+              of{" "}
+              <strong className="text-foreground">{sheetsData.length}</strong>{" "}
+              Sheets Imported
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Header controls: Search & Import buttons */}
       <div className="w-full flex items-center justify-between pb-4">
-        <div className="w-full flex justify-between items-center">
+        <div className="w-full flex justify-between items-center gap-4">
           <div className="flex items-center gap-3">
             {onBack && (
               <Button
@@ -681,7 +1509,7 @@ export function SalaryPayrollImportData({
                 Back
               </Button>
             )}
-            <div className="relative w-[30rem]">
+            <div className="relative w-[28rem] max-w-full">
               <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none">
                 <Icon
                   name="magnifying-glass"
@@ -690,27 +1518,303 @@ export function SalaryPayrollImportData({
                 />
               </div>
               <Input
-                placeholder="Search Payroll"
+                placeholder={`Search in ${activeSheet.sheetName}...`}
                 value={searchString}
                 onChange={(e) => setSearchString(e.target.value)}
                 className="pl-8 h-10 w-full focus-visible:ring-0"
               />
             </div>
           </div>
+
           <div className="flex items-center gap-3">
-            <Button variant={"default"} onClick={handleFinalImport}>
-              Import
-            </Button>
+            {allSheetsImported ? (
+              <Button
+                variant="default"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2 font-semibold shadow-md"
+                onClick={() => {
+                  const redirectUrl = currentPayrollId
+                    ? `/payroll/run-payroll/${currentPayrollId}`
+                    : "/payroll/run-payroll";
+                  navigate(redirectUrl);
+                }}
+              >
+                <Icon name="check" size="sm" />
+                All Sheets Imported &rarr; Go to Payroll
+              </Button>
+            ) : activeSheet.isImported && activeSheet.records.length === 0 ? (
+              <Button
+                variant="outline"
+                disabled
+                className="text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800 gap-1.5"
+              >
+                <Icon name="check" size="sm" />
+                Sheet "{activeSheet.sheetName}" Imported
+              </Button>
+            ) : (
+              <Button
+                variant="default"
+                onClick={handleFinalImport}
+                disabled={isImporting || activeSheet.records.length === 0}
+                className="gap-2 font-semibold shadow-sm"
+              >
+                <Icon name="import" size="sm" />
+                Import Sheet "{activeSheet.sheetName}" (
+                {activeSheet.records.length})
+              </Button>
+            )}
           </div>
         </div>
       </div>
 
+      {/* Spreadsheet Data Grid */}
       <ImportedDataTable
         data={tableData}
-        columns={ImportedDataColumns(fieldConfigs)}
-        fieldConfigs={fieldConfigs}
+        columns={ImportedDataColumns(activeFieldConfigs)}
+        fieldConfigs={activeFieldConfigs}
+        onCellChange={handleCellChange}
+        onBulkChange={handleBulkChange}
+        onDeleteColumn={(colKey) => setColToDelete(colKey)}
+        onDeleteSelectedRows={(selectedIndices) => {
+          setIndicesToDelete(selectedIndices);
+          setIsBulkDeleteOpen(true);
+        }}
+        onOpenBulkUpdate={(selectedIndices) => {
+          setSelectedIndicesForBulk(selectedIndices);
+          setBulkScope(selectedIndices.length > 0 ? "selected" : "all");
+          setIsBulkUpdateOpen(true);
+        }}
+        onOpenAddColumn={() => setIsAddColOpen(true)}
       />
 
+      {/* Bulk Delete Confirmation Dialog with "DELETE" text input */}
+      <AlertDialog
+        open={isBulkDeleteOpen}
+        onOpenChange={(open) => {
+          setIsBulkDeleteOpen(open);
+          if (!open) setDeleteConfirmText("");
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently remove{" "}
+              <strong className="text-foreground">
+                {indicesToDelete.length} employee row(s)
+              </strong>{" "}
+              from sheet{" "}
+              <strong className="text-foreground">
+                "{activeSheet.sheetName}"
+              </strong>
+              .
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="py-4 space-y-2">
+            <p className="text-sm text-foreground/80">
+              Please type{" "}
+              <strong className="font-mono text-destructive">DELETE</strong> to
+              confirm:
+            </p>
+            <Input
+              type="text"
+              autoFocus
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder="Confirm your action"
+              className="border border-input rounded-md h-10 w-full font-mono"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDeleteConfirmText("")}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleteConfirmText !== "DELETE"}
+              onClick={confirmBulkDelete}
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground disabled:opacity-50"
+            >
+              Delete Rows
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk Update Column Dialog */}
+      <Dialog open={isBulkUpdateOpen} onOpenChange={setIsBulkUpdateOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Bulk Update Column</DialogTitle>
+            <DialogDescription>
+              Update values column-wise for rows in sheet "
+              {activeSheet.sheetName}".
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Select Column</Label>
+              <Combobox
+                options={editableColOptions}
+                value={bulkColKey}
+                onChange={(val: string) => setBulkColKey(val)}
+                placeholder="Choose column..."
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Apply To</Label>
+              <div className="flex items-center gap-4 text-xs pt-1">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="bulkScope"
+                    checked={bulkScope === "all"}
+                    onChange={() => setBulkScope("all")}
+                    className="accent-primary"
+                  />
+                  <span>All rows ({activeSheet.records.length})</span>
+                </label>
+                {selectedIndicesForBulk.length > 0 && (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="bulkScope"
+                      checked={bulkScope === "selected"}
+                      onChange={() => setBulkScope("selected")}
+                      className="accent-primary"
+                    />
+                    <span>Selected rows ({selectedIndicesForBulk.length})</span>
+                  </label>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">New Value</Label>
+              <Input
+                type="text"
+                value={bulkValue}
+                onChange={(e) => setBulkValue(e.target.value)}
+                placeholder="Enter new value"
+                className="h-10"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => setIsBulkUpdateOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              type="button"
+              disabled={!bulkColKey || bulkValue === ""}
+              onClick={confirmBulkUpdate}
+            >
+              Apply Update
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Column Side Sheet */}
+      <Sheet open={isAddColOpen} onOpenChange={setIsAddColOpen}>
+        <SheetContent className="flex flex-col w-[500px] max-sm:w-full h-full">
+          <SheetHeader className="px-6 pt-4 pb-6 flex-shrink-0 border-b">
+            <SheetTitle className="text-xl font-bold text-foreground">
+              Add New Column
+            </SheetTitle>
+            <SheetDescription className="text-xs text-muted-foreground">
+              Add an earning or deduction column to sheet "
+              {activeSheet.sheetName}".
+            </SheetDescription>
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+            <div className="space-y-2">
+              <Label className="text-xs font-semibold">Column Name</Label>
+              <Input
+                placeholder="e.g. BONUS, SPECIAL_ALLOWANCE, ADVANCE"
+                value={newColName}
+                onChange={(e) => setNewColName(e.target.value)}
+                className="h-10 uppercase"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs font-semibold">Column Type</Label>
+              <Combobox
+                options={[
+                  { label: "Earning", value: "earning" },
+                  { label: "Deduction", value: "deduction" },
+                ]}
+                value={newColType}
+                onChange={(val: string) => setNewColType(val)}
+                placeholder="Select Type"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs font-semibold">Default Amount</Label>
+              <Input
+                type="number"
+                placeholder="0"
+                value={newColDefaultAmount}
+                onChange={(e) => setNewColDefaultAmount(Number(e.target.value))}
+                className="h-10"
+              />
+            </div>
+          </div>
+          <SheetFooter className="p-6 border-t mt-auto">
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => setIsAddColOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              type="button"
+              disabled={!newColName.trim() || !newColType}
+              onClick={confirmAddColumn}
+            >
+              Add Column
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+
+      {/* Delete Column Confirmation Dialog */}
+      <AlertDialog
+        open={Boolean(colToDelete)}
+        onOpenChange={(open) => {
+          if (!open) setColToDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Column "{colToDelete}"?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove column "{colToDelete}" and all its
+              values from sheet "{activeSheet.sheetName}". This action cannot be
+              undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setColToDelete(null)}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              onClick={confirmDeleteColumn}
+            >
+              Delete Column
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Unmatched Employees Panel */}
       {showUnmatchedView && unmatchedEmployees.length > 0 && (
         <Dialog open={showUnmatchedView} onOpenChange={setShowUnmatchedView}>
           <DialogContent className="max-w-5xl w-[95vw] max-h-[90vh] p-6 overflow-hidden flex flex-col">

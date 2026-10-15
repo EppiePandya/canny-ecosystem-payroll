@@ -26,7 +26,6 @@ import { AddPayrollFieldSheet } from "./add-payroll-field-sheet";
 import { AddReimbursementModal } from "./add-reimbursement-modal";
 import { AddSalaryEntrySheet } from "./add-salary-entry-sheet";
 import { DivideFieldsSheet } from "./divide-fields-sheet";
-import { TestPayrollExcelTransformModal } from "./test-payroll-excel-transform-modal";
 
 export function ImportDepartmentPayrollDialog({
   uniqueFields,
@@ -35,7 +34,7 @@ export function ImportDepartmentPayrollDialog({
   existingEmployeeIds,
   payrollFields,
   selectedRows = [],
-  payrollData,
+  _payrollData,
 }: {
   uniqueFields: { name: string; type: "earning" | "deduction" }[];
   payrollId: string;
@@ -43,7 +42,7 @@ export function ImportDepartmentPayrollDialog({
   existingEmployeeIds: string[];
   payrollFields?: any[];
   selectedRows?: any[];
-  payrollData?: any;
+  _payrollData?: any;
 }) {
   const { role } = useUser();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -52,8 +51,6 @@ export function ImportDepartmentPayrollDialog({
   const navigate = useNavigate();
 
   const [isReimbursementModalOpen, setIsReimbursementModalOpen] =
-    useState(false);
-  const [isTestTransformModalOpen, setIsTestTransformModalOpen] =
     useState(false);
 
   return (
@@ -194,38 +191,14 @@ export function ImportDepartmentPayrollDialog({
               <Icon name="plus-circled" size="sm" className="mb-0.5" />
               <span>Add Other Reimb.</span>
             </DropdownMenuItem>
-
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onClick={() => setIsTestTransformModalOpen(true)}
-              className="space-x-2 flex items-center cursor-pointer text-primary focus:text-primary font-medium"
-            >
-              <Icon name="magic" size="sm" className="mb-0.5" />
-              <span>Test Payroll Excel Transform</span>
-            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-
-        <Button
-          variant={selectedRows.length > 0 ? "muted" : "outline"}
-          size="icon"
-          className="h-10 w-10 border border-input shrink-0"
-          title="Test Payroll Excel Transform"
-          onClick={() => setIsTestTransformModalOpen(true)}
-        >
-          <Icon name="magic" className="h-[18px] w-[18px]" />
-        </Button>
       </div>
 
       <AddReimbursementModal
         isOpen={isReimbursementModalOpen}
         onOpenChange={setIsReimbursementModalOpen}
         payrollId={payrollId}
-      />
-
-      <TestPayrollExcelTransformModal
-        isOpen={isTestTransformModalOpen}
-        onOpenChange={setIsTestTransformModalOpen}
       />
     </>
   );

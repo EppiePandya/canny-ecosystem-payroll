@@ -176,6 +176,7 @@ export async function action({
               successMessage ??
               message ??
               "Salary entries imported successfully",
+            payrollId,
             failedRedirect,
             error: null,
           });
@@ -183,7 +184,11 @@ export async function action({
 
         error = salaryError;
       } else {
-        const { error: salaryError, message } = await createSalaryPayroll({
+        const {
+          error: salaryError,
+          message,
+          data: createdPayroll,
+        } = await createSalaryPayroll({
           supabase,
           data: {
             title: payrollTitle,
@@ -210,6 +215,7 @@ export async function action({
               successMessage ??
               message ??
               "Salary entries imported successfully",
+            payrollId: (createdPayroll as any)?.id,
             failedRedirect,
             error: null,
           });

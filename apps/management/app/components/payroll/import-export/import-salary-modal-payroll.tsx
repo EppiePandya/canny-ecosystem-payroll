@@ -13,7 +13,7 @@ import { cn } from "@canny_ecosystem/ui/utils/cn";
 import { SIZE_1KB, SIZE_1MB } from "@canny_ecosystem/utils";
 import { modalSearchParamNames } from "@canny_ecosystem/utils/constant";
 import { useNavigate, useParams, useSearchParams } from "@remix-run/react";
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 
 export const ImportSalaryPayrollModal = () => {
   const { payrollId } = useParams();
@@ -62,6 +62,7 @@ export const ImportSalaryPayrollModal = () => {
       const url = isIncrement
         ? `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}isIncrement=true`
         : baseUrl;
+      onClose();
       navigate(url, {
         state: {
           file: selectedFile,
@@ -137,19 +138,21 @@ export const ImportSalaryPayrollModal = () => {
               Only .csv, .xlsx, .xls formats are supported!
             </DialogDescription>
             <div className="flex items-center gap-2 text-sm">
-              <span
-                className="text-primary cursor-pointer hover:underline font-medium"
+              <button
+                type="button"
+                className="text-primary cursor-pointer hover:underline font-medium bg-transparent p-0 border-none inline text-sm"
                 onClick={downloadDemoCsv}
               >
                 Download CSV format
-              </span>
+              </button>
               <span className="text-muted-foreground/30">|</span>
-              <span
-                className="text-primary cursor-pointer hover:underline font-medium"
+              <button
+                type="button"
+                className="text-primary cursor-pointer hover:underline font-medium bg-transparent p-0 border-none inline text-sm"
                 onClick={downloadDemoExcel}
               >
                 Download Excel format
-              </span>
+              </button>
             </div>
             <p className="text-sm text-muted-foreground">
               Maximum upload size is 500MB!
@@ -161,7 +164,7 @@ export const ImportSalaryPayrollModal = () => {
               onClick={handleFileSubmit}
               disabled={!eligibleFileSize}
             >
-              Confirm file
+              Confirm & Transform with AI
             </Button>
           </div>
         </div>
