@@ -35,14 +35,33 @@ export async function action({ request }: ActionFunctionArgs) {
     });
   } catch (error: any) {
     console.error("AI Payroll Transformation Action Error:", error);
+    let errMsg =
+      error?.message ||
+      "An error occurred while transforming the payroll file with AI.";
+
+    let retrySeconds: number | null = null;
+    const retryMatch = errMsg.match(/retry (?:in|after) ([0-9.]+)\s*s?/i);
+    if (retryMatch?.[1]) {
+      retrySeconds = Math.ceil(Number.parseFloat(retryMatch[1]));
+      errMsg = errMsg.replace(
+        /retry (?:in|after) [0-9.]+\s*s?/i,
+        `retry in ${retrySeconds}s`,
+      );
+    }
+
+    const isQuotaError = Boolean(
+      retrySeconds ||
+        /quota|rate[- ]limit|resource_exhausted|429/i.test(errMsg),
+    );
+
     return json(
       {
         success: false,
-        error:
-          error?.message ||
-          "An error occurred while transforming the payroll file with AI.",
+        error: errMsg,
+        retrySeconds: retrySeconds || undefined,
+        isQuotaError,
       },
-      { status: 500 },
+      { status: isQuotaError ? 429 : 500 },
     );
   }
 }

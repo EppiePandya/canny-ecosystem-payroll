@@ -2,7 +2,6 @@ import type { FieldConfig } from "@/routes/_protected+/payroll+/run-payroll+/imp
 import { Button } from "@canny_ecosystem/ui/button";
 import { Icon } from "@canny_ecosystem/ui/icon";
 import {
-  Table,
   TableBody,
   TableCell,
   TableFooter,
@@ -24,12 +23,19 @@ interface ImportedDataTableProps<TData, TValue> {
   data: TData[];
   conflictingIndex?: number[];
   fieldConfigs: FieldConfig[];
+  canUndo?: boolean;
+  canRedo?: boolean;
+  undoCount?: number;
+  redoCount?: number;
+  onUndo?: () => void;
+  onRedo?: () => void;
   onCellChange?: (rowIndex: number, colKey: string, newValue: string) => void;
   onBulkChange?: (
     updates: Array<{ rowIndex: number; colKey: string; newValue: string }>,
   ) => void;
   onDeleteSelectedRows?: (selectedIndices: number[]) => void;
   onDeleteColumn?: (colKey: string) => void;
+  onRenameColumn?: (colKey: string, newName: string) => void;
   onOpenBulkUpdate?: (selectedIndices: number[]) => void;
   onOpenAddColumn?: () => void;
 }
@@ -39,10 +45,17 @@ export function ImportedDataTable<TData, TValue>({
   data,
   conflictingIndex,
   fieldConfigs,
+  canUndo,
+  canRedo,
+  undoCount,
+  redoCount,
+  onUndo,
+  onRedo,
   onCellChange,
   onBulkChange,
   onDeleteSelectedRows,
   onDeleteColumn,
+  onRenameColumn,
   onOpenBulkUpdate,
   onOpenAddColumn,
 }: ImportedDataTableProps<TData, TValue>) {
@@ -55,6 +68,34 @@ export function ImportedDataTable<TData, TValue>({
     rowIndex: number;
     colKey: string;
   } | null>(null);
+
+  // Click-outside listener: unselects active cell when clicking outside table data cells
+  useEffect(() => {
+    const handleDocumentMouseDown = (e: MouseEvent) => {
+      if (!selectedCell) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+
+      // Don't unselect if user clicked inside an open dialog (e.g. bulk update modal)
+      if (target.closest("[role='dialog']")) {
+        return;
+      }
+
+      // Check if click was inside a data cell of this table
+      const dataCell = target.closest("td[data-cell='true']");
+      if (dataCell && tableContainerRef.current?.contains(dataCell)) {
+        return;
+      }
+
+      // Clicked anywhere else -> unselect cell
+      setSelectedCell(null);
+    };
+
+    document.addEventListener("mousedown", handleDocumentMouseDown);
+    return () => {
+      document.removeEventListener("mousedown", handleDocumentMouseDown);
+    };
+  }, [selectedCell]);
 
   // Active editing state (Excel inline input)
   const [editingCell, setEditingCell] = useState<{
@@ -100,12 +141,27 @@ export function ImportedDataTable<TData, TValue>({
   const startEditing = useCallback(
     (rowIndex: number, colKey: string, initialChar?: string) => {
       if (colKey === "sr_no" || colKey === "select") return;
+      const rowItem = data[rowIndex] as any;
+      if (
+        conflictingIndex?.includes(rowIndex) ||
+        rowItem?.has_error ||
+        rowItem?.is_disabled
+      ) {
+        toast({
+          title: "Row Disabled",
+          description:
+            rowItem?.error_message ||
+            "This row has an error and is disabled for mutations.",
+          variant: "destructive",
+        });
+        return;
+      }
       const currentVal = getCellRawValue(rowIndex, colKey);
       setEditingCell({ rowIndex, colKey });
       setEditValue(initialChar !== undefined ? initialChar : currentVal);
       setSelectedCell({ rowIndex, colKey });
     },
-    [getCellRawValue],
+    [data, conflictingIndex, getCellRawValue, toast],
   );
 
   const commitEdit = useCallback(() => {
@@ -136,12 +192,7 @@ export function ImportedDataTable<TData, TValue>({
     if (!selectedCell || editingCell) return;
     const val = getCellRawValue(selectedCell.rowIndex, selectedCell.colKey);
     navigator.clipboard.writeText(val);
-    toast({
-      title: "Copied to clipboard",
-      description: `Value: "${val}" copied.`,
-      variant: "success",
-    });
-  }, [selectedCell, editingCell, getCellRawValue, toast]);
+  }, [selectedCell, editingCell, getCellRawValue]);
 
   // Paste handler (multi-row / multi-col Excel support)
   const handlePasteData = useCallback(
@@ -168,6 +219,15 @@ export function ImportedDataTable<TData, TValue>({
         const targetRow = startRow + r;
         if (targetRow >= data.length) break;
 
+        const targetItem = data[targetRow] as any;
+        if (
+          conflictingIndex?.includes(targetRow) ||
+          targetItem?.has_error ||
+          targetItem?.is_disabled
+        ) {
+          continue; // skip disabled rows during paste
+        }
+
         const line = lines[r];
         const cells = line.includes("\t") ? line.split("\t") : line.split(",");
 
@@ -193,14 +253,9 @@ export function ImportedDataTable<TData, TValue>({
             onCellChange?.(u.rowIndex, u.colKey, u.newValue);
           }
         }
-        toast({
-          title: "Pasted Data",
-          description: `Successfully pasted ${updates.length} cell(s) across ${lines.length} row(s).`,
-          variant: "success",
-        });
       }
     },
-    [selectedCell, dataColKeys, data.length, onBulkChange, onCellChange, toast],
+    [selectedCell, dataColKeys, data.length, onBulkChange, onCellChange],
   );
 
   // Global keyboard shortcuts on table
@@ -215,6 +270,13 @@ export function ImportedDataTable<TData, TValue>({
           e.preventDefault();
         }
       }
+      return;
+    }
+
+    // Escape: unselect cell
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setSelectedCell(null);
       return;
     }
 
@@ -283,24 +345,57 @@ export function ImportedDataTable<TData, TValue>({
       return;
     }
 
+    const isCurrentRowDisabled =
+      conflictingIndex?.includes(rowIndex) ||
+      Boolean((data[rowIndex] as any)?.has_error) ||
+      Boolean((data[rowIndex] as any)?.is_disabled);
+
+    // Undo: Ctrl+Z / Cmd+Z
+    if (
+      (e.ctrlKey || e.metaKey) &&
+      e.key.toLowerCase() === "z" &&
+      !e.shiftKey
+    ) {
+      e.preventDefault();
+      onUndo?.();
+      return;
+    }
+
+    // Redo: Ctrl+Y / Cmd+Y or Ctrl+Shift+Z / Cmd+Shift+Z
+    if (
+      (e.ctrlKey || e.metaKey) &&
+      (e.key.toLowerCase() === "y" ||
+        (e.key.toLowerCase() === "z" && e.shiftKey))
+    ) {
+      e.preventDefault();
+      onRedo?.();
+      return;
+    }
+
     // Enter / F2: Start editing
     if (e.key === "Enter" || e.key === "F2") {
       e.preventDefault();
-      startEditing(rowIndex, colKey);
+      if (!isCurrentRowDisabled) {
+        startEditing(rowIndex, colKey);
+      }
       return;
     }
 
     // Delete / Backspace: Clear cell
     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
-      onCellChange?.(rowIndex, colKey, "");
+      if (!isCurrentRowDisabled) {
+        onCellChange?.(rowIndex, colKey, "");
+      }
       return;
     }
 
     // Typing directly starts editing with character
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
-      startEditing(rowIndex, colKey, e.key);
+      if (!isCurrentRowDisabled) {
+        startEditing(rowIndex, colKey, e.key);
+      }
       return;
     }
   };
@@ -362,13 +457,6 @@ export function ImportedDataTable<TData, TValue>({
       handlePasteData(text);
     }
   };
-
-  const selectedColConfig = fieldConfigs.find(
-    (f) => f.key === selectedCell?.colKey,
-  );
-  const selectedDisplayValue = selectedCell
-    ? getCellRawValue(selectedCell.rowIndex, selectedCell.colKey)
-    : "";
 
   const selectedRows = table.getSelectedRowModel().rows;
   const selectedRowIndices = selectedRows.map((r) => r.index);
@@ -436,26 +524,39 @@ export function ImportedDataTable<TData, TValue>({
   );
 
   return (
-    <div className="relative mb-8 space-y-2">
-      {/* Excel Status Bar & Action Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs px-2.5 py-1.5 bg-muted/40 border rounded-md text-muted-foreground select-none">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 font-mono">
-            <span className="font-semibold text-foreground">
-              {selectedCell
-                ? `Cell [Row ${selectedCell.rowIndex + 1}, ${selectedColConfig?.key?.toUpperCase() || selectedCell.colKey}]`
-                : "Ready"}
-            </span>
-            {selectedCell && (
-              <span className="text-primary font-medium">
-                = {selectedDisplayValue || `""`}
-              </span>
-            )}
-          </div>
-          <span className="text-muted-foreground/40">|</span>
-          <span className="text-xs">
-            {tableLength} {tableLength === 1 ? "Employee" : "Employees"} loaded
+    <div className="relative flex-1 min-h-0 flex flex-col space-y-3.5 w-full h-full overflow-hidden">
+      {/* Excel Action Toolbar: Left-aligned shortcuts, Right-aligned actions */}
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs px-3 py-2 bg-muted/40 border rounded-md text-muted-foreground select-none shrink-0 mb-1">
+        {/* Left Side: Keyboard Shortcuts Info */}
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground/80">
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 bg-background border rounded text-[9px] font-mono shadow-2xs">
+              Ctrl+Z
+            </kbd>
+            <span>Undo</span>
           </span>
+          <span className="flex items-center gap-1">
+            <kbd className="px-1.5 py-0.5 bg-background border rounded text-[9px] font-mono shadow-2xs">
+              Ctrl+Y
+            </kbd>
+            <span>Redo</span>
+          </span>
+          <span className="flex items-center gap-1 hidden sm:flex">
+            <kbd className="px-1.5 py-0.5 bg-background border rounded text-[9px] font-mono shadow-2xs">
+              Double-click
+            </kbd>
+            <span>Edit</span>
+          </span>
+          <span className="flex items-center gap-1 hidden md:flex">
+            <kbd className="px-1.5 py-0.5 bg-background border rounded text-[9px] font-mono shadow-2xs">
+              Ctrl+C
+            </kbd>
+            <span>/</span>
+            <kbd className="px-1.5 py-0.5 bg-background border rounded text-[9px] font-mono shadow-2xs">
+              Ctrl+V
+            </kbd>
+          </span>
+
           {selectedRowIndices.length > 0 && (
             <>
               <span className="text-muted-foreground/40">|</span>
@@ -466,8 +567,76 @@ export function ImportedDataTable<TData, TValue>({
           )}
         </div>
 
-        {/* Toolbar Buttons: Bulk Actions, Add Column, Excel Shortcuts */}
+        {/* Right Side: Action Buttons: Undo/Redo, Bulk Actions, Add Column */}
         <div className="flex items-center gap-2">
+          {/* Undo Button */}
+          {onUndo && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onUndo}
+              disabled={!canUndo}
+              className={cn(
+                "h-7 text-xs gap-1.5 px-2.5 transition-all",
+                canUndo
+                  ? "border-amber-500/50 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 cursor-pointer"
+                  : "opacity-40 cursor-not-allowed",
+              )}
+              title="Undo last mutation (Ctrl+Z / Cmd+Z)"
+            >
+              <svg
+                className="w-3.5 h-3.5 shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
+                />
+              </svg>
+              <span>Undo{undoCount ? ` (${undoCount})` : ""}</span>
+            </Button>
+          )}
+
+          {/* Redo Button */}
+          {onRedo && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onRedo}
+              disabled={!canRedo}
+              className={cn(
+                "h-7 text-xs gap-1.5 px-2.5 transition-all",
+                canRedo
+                  ? "border-blue-500/50 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 cursor-pointer"
+                  : "opacity-40 cursor-not-allowed",
+              )}
+              title="Redo mutation (Ctrl+Y / Cmd+Y / Cmd+Shift+Z)"
+            >
+              <svg
+                className="w-3.5 h-3.5 shrink-0"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M21 10H11a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6"
+                />
+              </svg>
+              <span>Redo{redoCount ? ` (${redoCount})` : ""}</span>
+            </Button>
+          )}
+
           {selectedRowIndices.length > 0 && onDeleteSelectedRows && (
             <Button
               type="button"
@@ -506,24 +675,6 @@ export function ImportedDataTable<TData, TValue>({
               Add Column
             </Button>
           )}
-
-          <div className="items-center gap-2 text-[11px] text-muted-foreground/70 hidden lg:flex pl-2 border-l border-border/50">
-            <span className="flex items-center gap-0.5">
-              <kbd className="px-1 py-0.2 bg-background border rounded text-[9px]">
-                Double-click
-              </kbd>{" "}
-              Edit
-            </span>
-            <span className="flex items-center gap-0.5">
-              <kbd className="px-1 py-0.2 bg-background border rounded text-[9px]">
-                Ctrl+C
-              </kbd>{" "}
-              /{" "}
-              <kbd className="px-1 py-0.2 bg-background border rounded text-[9px]">
-                Ctrl+V
-              </kbd>
-            </span>
-          </div>
         </div>
       </div>
 
@@ -535,181 +686,199 @@ export function ImportedDataTable<TData, TValue>({
         tabIndex={0}
         onKeyDown={handleTableKeyDown}
         onPaste={handleNativePaste}
+        onMouseDown={(e) => {
+          const target = e.target as HTMLElement;
+          if (
+            target === tableContainerRef.current ||
+            target.tagName === "TABLE" ||
+            target.tagName === "TBODY"
+          ) {
+            setSelectedCell(null);
+          }
+        }}
         className={cn(
-          "relative border overflow-x-auto rounded focus:outline-none focus:ring-1 focus:ring-primary/40",
+          "relative border rounded focus:outline-none focus:ring-1 focus:ring-primary/40 flex-1 min-h-0 overflow-auto [scrollbar-width:thin] select-none",
           !tableLength && "border-none",
         )}
       >
-        <div className="relative">
-          <Table>
-            <ImportedDataTableHeader
-              table={table}
-              className={cn(!tableLength && "hidden")}
-              fieldConfigs={fieldConfigs}
-              onDeleteColumn={onDeleteColumn}
-            />
-            <TableBody>
-              {tableLength ? (
-                tableRows.map((row, index) => {
-                  const isConflicting = conflictingIndex?.includes(index);
-                  const hasExistingSalary = (row.original as any)
-                    ?.has_existing_salary_entry;
+        <table className="w-full bg-card caption-bottom text-sm text-left border-collapse select-none">
+          <ImportedDataTableHeader
+            table={table}
+            className={cn(!tableLength && "hidden")}
+            fieldConfigs={fieldConfigs}
+            onDeleteColumn={onDeleteColumn}
+            onRenameColumn={onRenameColumn}
+          />
+          <TableBody>
+            {tableLength ? (
+              tableRows.map((row, index) => {
+                const isConflicting = conflictingIndex?.includes(index);
+                const hasError = Boolean(
+                  (row.original as any)?.has_error ||
+                    (row.original as any)?.is_disabled,
+                );
+                const isRowDisabled = isConflicting || hasError;
+                const hasExistingSalary = (row.original as any)
+                  ?.has_existing_salary_entry;
 
-                  return (
-                    <TableRow
-                      key={row.id}
-                      className={cn(
-                        "relative h-[40px] md:h-[45px] cursor-default select-text transition-colors",
-                        isConflicting && "bg-destructive/20",
+                return (
+                  <TableRow
+                    key={row.id}
+                    className={cn(
+                      "relative h-[40px] md:h-[45px] cursor-default select-text transition-colors",
+                      isRowDisabled &&
+                        "bg-destructive/15 hover:bg-destructive/20 border-l-4 border-l-destructive cursor-not-allowed opacity-80",
+                      !isRowDisabled && isConflicting && "bg-destructive/20",
+                      !isRowDisabled &&
                         hasExistingSalary &&
-                          "bg-red-500/10 hover:bg-red-500/15 dark:bg-red-950/20 dark:hover:bg-red-950/30",
-                      )}
-                    >
-                      {row.getVisibleCells().map((cell) => {
-                        const colKey = cell.column.id;
-                        const isSrNo = colKey === "sr_no";
-                        const isSelect = colKey === "select";
-                        const isSelected =
-                          !isSrNo &&
-                          !isSelect &&
-                          selectedCell?.rowIndex === index &&
-                          selectedCell?.colKey === colKey;
-                        const isEditing =
-                          !isSrNo &&
-                          !isSelect &&
-                          editingCell?.rowIndex === index &&
-                          editingCell?.colKey === colKey;
-
-                        return (
-                          <TableCell
-                            key={cell.id}
-                            onClick={() => {
-                              if (!isSrNo && !isSelect) {
-                                setSelectedCell({ rowIndex: index, colKey });
-                              }
-                            }}
-                            onDoubleClick={() => {
-                              if (!isSrNo && !isSelect) {
-                                startEditing(index, colKey);
-                              }
-                            }}
-                            className={cn(
-                              "h-[52px] px-3 py-1 table-cell transition-all relative",
-                              isSelected &&
-                                !isEditing &&
-                                "ring-2 ring-primary ring-inset bg-primary/10 shadow-sm",
-                              isEditing &&
-                                "p-0.5 ring-2 ring-primary bg-background",
-                            )}
-                          >
-                            {isEditing ? (
-                              <div className="relative w-full h-full flex items-center">
-                                <input
-                                  ref={editInputRef}
-                                  type="text"
-                                  value={editValue}
-                                  onChange={(e) => setEditValue(e.target.value)}
-                                  onKeyDown={handleInputKeyDown}
-                                  onBlur={commitEdit}
-                                  className="w-full h-8 px-2 py-0.5 text-xs font-mono bg-background border border-primary rounded shadow-inner focus:outline-none focus:ring-2 focus:ring-primary z-20"
-                                />
-                              </div>
-                            ) : (
-                              <div className="relative w-full h-full flex items-center">
-                                {flexRender(
-                                  cell.column.columnDef.cell,
-                                  cell.getContext(),
-                                )}
-                                {isSelected && (
-                                  <span
-                                    className="absolute -bottom-1 -right-1 w-2 h-2 bg-primary rounded-[1px] pointer-events-none z-10"
-                                    title="Active Cell"
-                                  />
-                                )}
-                              </div>
-                            )}
-                          </TableCell>
-                        );
-                      })}
-                    </TableRow>
-                  );
-                })
-              ) : (
-                <TableRow className={cn(!tableLength && "border-none")}>
-                  <TableCell
-                    colSpan={columns.length}
-                    className="h-80 grid place-items-center text-center tracking-wide text-xl capitalize"
+                        "bg-red-500/10 hover:bg-red-500/15 dark:bg-red-950/20 dark:hover:bg-red-950/30",
+                    )}
                   >
-                    No Payroll Found.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-            {tableLength > 0 && (
-              <TableFooter className="bg-muted/70 font-semibold border-t-2 border-primary/20 sticky bottom-0 z-20 shadow-xs">
-                <TableRow className="h-[48px] hover:bg-muted/80">
-                  {table.getVisibleLeafColumns().map((col) => {
-                    const colKey = col.id;
-                    if (colKey === "select") {
+                    {row.getVisibleCells().map((cell) => {
+                      const colKey = cell.column.id;
+                      const isSrNo = colKey === "sr_no";
+                      const isSelect = colKey === "select";
+                      const isSelected =
+                        !isSrNo &&
+                        !isSelect &&
+                        selectedCell?.rowIndex === index &&
+                        selectedCell?.colKey === colKey;
+                      const isEditing =
+                        !isSrNo &&
+                        !isSelect &&
+                        editingCell?.rowIndex === index &&
+                        editingCell?.colKey === colKey;
+
                       return (
                         <TableCell
-                          key={col.id}
-                          className="w-10 px-2 text-center text-xs text-muted-foreground font-mono font-bold"
+                          key={cell.id}
+                          data-cell={!isSrNo && !isSelect ? "true" : undefined}
+                          onClick={() => {
+                            if (!isSrNo && !isSelect) {
+                              setSelectedCell({ rowIndex: index, colKey });
+                            }
+                          }}
+                          onDoubleClick={() => {
+                            if (!isSrNo && !isSelect && !isRowDisabled) {
+                              startEditing(index, colKey);
+                            }
+                          }}
+                          className={cn(
+                            "h-[52px] px-3 py-1 table-cell transition-all relative",
+                            isSelected &&
+                              !isEditing &&
+                              "ring-2 ring-primary ring-inset bg-primary/10 shadow-sm",
+                            isEditing &&
+                              "p-0.5 ring-2 ring-primary bg-background",
+                          )}
                         >
-                          Σ
+                          {isEditing ? (
+                            <div className="relative w-full h-full flex items-center">
+                              <input
+                                ref={editInputRef}
+                                type="text"
+                                value={editValue}
+                                onChange={(e) => setEditValue(e.target.value)}
+                                onKeyDown={handleInputKeyDown}
+                                onBlur={commitEdit}
+                                className="w-full h-8 px-2 py-0.5 text-xs font-mono bg-background border border-primary rounded shadow-inner focus:outline-none focus:ring-2 focus:ring-primary z-20"
+                              />
+                            </div>
+                          ) : (
+                            <div className="relative w-full h-full flex items-center">
+                              {flexRender(
+                                cell.column.columnDef.cell,
+                                cell.getContext(),
+                              )}
+                              {isSelected && (
+                                <span
+                                  className="absolute -bottom-1 -right-1 w-2 h-2 bg-primary rounded-[1px] pointer-events-none z-10"
+                                  title="Active Cell"
+                                />
+                              )}
+                            </div>
+                          )}
                         </TableCell>
                       );
-                    }
-                    if (colKey === "sr_no") {
-                      return (
-                        <TableCell
-                          key={col.id}
-                          className="px-4 py-2 font-bold text-xs uppercase tracking-wider text-foreground whitespace-nowrap"
-                        >
-                          Total
-                        </TableCell>
-                      );
-                    }
-
-                    const total = getColumnTotal(colKey);
-                    const config = fieldConfigs.find(
-                      (f) => f.key.toLowerCase() === colKey.toLowerCase(),
-                    );
-                    const isEarning =
-                      config?.type === "earning" ||
-                      colKey === "net_pay" ||
-                      colKey === "gross";
-                    const isDeduction = config?.type === "deduction";
-
-                    if (total === null) {
-                      return (
-                        <TableCell
-                          key={col.id}
-                          className="px-3 py-2 text-muted-foreground/40 text-xs text-center font-mono"
-                        >
-                          --
-                        </TableCell>
-                      );
-                    }
-
+                    })}
+                  </TableRow>
+                );
+              })
+            ) : (
+              <TableRow className={cn(!tableLength && "border-none")}>
+                <TableCell
+                  colSpan={columns.length}
+                  className="h-80 grid place-items-center text-center tracking-wide text-xl capitalize"
+                >
+                  No Payroll Found.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+          {tableLength > 0 && (
+            <TableFooter className="bg-muted/95 backdrop-blur-xs font-semibold border-t-2 border-primary/20 sticky bottom-0 z-20 shadow-md">
+              <TableRow className="h-[48px] hover:bg-muted/80 sticky bottom-0 bg-muted/95 backdrop-blur-xs">
+                {table.getVisibleLeafColumns().map((col) => {
+                  const colKey = col.id;
+                  if (colKey === "select") {
                     return (
                       <TableCell
                         key={col.id}
-                        className={cn(
-                          "px-3 py-2 text-xs font-mono font-bold tracking-tight whitespace-nowrap",
-                          isEarning && "text-emerald-700 dark:text-emerald-400",
-                          isDeduction && "text-red-700 dark:text-red-400",
-                        )}
+                        className="w-10 px-2 text-center text-xs text-muted-foreground font-mono font-bold sticky bottom-0 bg-muted/95 backdrop-blur-xs"
                       >
-                        ₹{Math.round(total).toLocaleString("en-IN")}
+                        Σ
                       </TableCell>
                     );
-                  })}
-                </TableRow>
-              </TableFooter>
-            )}
-          </Table>
-        </div>
+                  }
+                  if (colKey === "sr_no") {
+                    return (
+                      <TableCell
+                        key={col.id}
+                        className="px-4 py-2 font-bold text-xs uppercase tracking-wider text-foreground whitespace-nowrap sticky bottom-0 bg-muted/95 backdrop-blur-xs"
+                      >
+                        Total
+                      </TableCell>
+                    );
+                  }
+
+                  const total = getColumnTotal(colKey);
+                  const config = fieldConfigs.find(
+                    (f) => f.key.toLowerCase() === colKey.toLowerCase(),
+                  );
+                  const isEarning =
+                    config?.type === "earning" ||
+                    colKey === "net_pay" ||
+                    colKey === "gross";
+                  const isDeduction = config?.type === "deduction";
+
+                  if (total === null) {
+                    return (
+                      <TableCell
+                        key={col.id}
+                        className="px-3 py-2 text-muted-foreground/40 text-xs text-center font-mono sticky bottom-0 bg-muted/95 backdrop-blur-xs"
+                      >
+                        --
+                      </TableCell>
+                    );
+                  }
+
+                  return (
+                    <TableCell
+                      key={col.id}
+                      className={cn(
+                        "px-3 py-2 text-xs font-mono font-bold tracking-tight whitespace-nowrap sticky bottom-0 bg-muted/95 backdrop-blur-xs",
+                        isEarning && "text-emerald-700 dark:text-emerald-400",
+                        isDeduction && "text-red-700 dark:text-red-400",
+                      )}
+                    >
+                      ₹{Math.round(total).toLocaleString("en-IN")}
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
+            </TableFooter>
+          )}
+        </table>
       </div>
     </div>
   );

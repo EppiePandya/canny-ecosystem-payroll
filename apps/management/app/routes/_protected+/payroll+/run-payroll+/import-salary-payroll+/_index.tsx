@@ -27,7 +27,12 @@ import {
   defaultYear,
 } from "@canny_ecosystem/utils";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { json, useLoaderData, useLocation } from "@remix-run/react";
+import {
+  json,
+  useLoaderData,
+  useLocation,
+  useNavigate,
+} from "@remix-run/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type FieldConfig = {
@@ -90,8 +95,8 @@ const DEFAULT_PAYMENT_FIELDS = [
   { name: "ACTUAL_WAGES", display_name: "ACTUAL WAGES", type: "earning" },
   { name: "NET_PAY", display_name: "NET PAY", type: "earning" },
   {
-    name: "TOTAL_DEDUCTIONS",
-    display_name: "TOTAL DEDUCTIONS",
+    name: "DEDUCTION",
+    display_name: "DEDUCTION",
     type: "deduction",
   },
   { name: "PF", display_name: "PF", type: "deduction" },
@@ -185,12 +190,30 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ ...result, success: true });
   } catch (error: any) {
     console.error("AI Transform Route Action Error:", error);
+    let errMsg = error?.message || "Failed to transform payroll Excel file.";
+    let retrySeconds: number | null = null;
+    const retryMatch = errMsg.match(/retry (?:in|after) ([0-9.]+)\s*s?/i);
+    if (retryMatch?.[1]) {
+      retrySeconds = Math.ceil(Number.parseFloat(retryMatch[1]));
+      errMsg = errMsg.replace(
+        /retry (?:in|after) [0-9.]+\s*s?/i,
+        `retry in ${retrySeconds}s`,
+      );
+    }
+
+    const isQuotaError = Boolean(
+      retrySeconds ||
+        /quota|rate[- ]limit|resource_exhausted|429/i.test(errMsg),
+    );
+
     return json(
       {
         success: false,
-        error: error?.message || "Failed to transform payroll Excel file.",
+        error: errMsg,
+        retrySeconds: retrySeconds || undefined,
+        isQuotaError,
       },
-      { status: 500 },
+      { status: isQuotaError ? 429 : 500 },
     );
   }
 }
@@ -202,79 +225,6 @@ export type SheetDataEntry = {
   isImported: boolean;
   importedCount?: number;
 };
-
-export function ImportPayrollStepper({ currentStep }: { currentStep: 1 | 2 }) {
-  return (
-    <div className="w-full max-w-xl mx-auto px-4 mb-6">
-      <div className="flex items-center justify-between relative">
-        {/* Background track line */}
-        <div className="absolute top-1/2 left-10 right-10 h-0.5 -translate-y-1/2 bg-muted-foreground/20 z-0" />
-        {/* Active track line */}
-        <div
-          className={cn(
-            "absolute top-1/2 left-10 h-0.5 -translate-y-1/2 bg-primary transition-all duration-300 z-0",
-            currentStep === 1 ? "w-0" : "right-10",
-          )}
-        />
-
-        {/* Step 1 */}
-        <div className="relative z-10 flex flex-col items-center">
-          <div
-            className={cn(
-              "w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm transition-all shadow-sm",
-              currentStep === 1
-                ? "border-2 border-primary bg-primary text-primary-foreground ring-4 ring-primary/20"
-                : "border-2 border-primary bg-primary text-primary-foreground",
-            )}
-          >
-            {currentStep > 1 ? (
-              <Icon
-                name="check"
-                size="sm"
-                className="text-primary-foreground"
-              />
-            ) : (
-              "1"
-            )}
-          </div>
-          <div className="mt-2 text-center">
-            <p className="text-xs font-bold text-foreground">Step 1</p>
-            <p className="text-[11px] text-muted-foreground whitespace-nowrap">
-              Upload & AI Analysis
-            </p>
-          </div>
-        </div>
-
-        {/* Step 2 */}
-        <div className="relative z-10 flex flex-col items-center">
-          <div
-            className={cn(
-              "w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm transition-all shadow-sm",
-              currentStep === 2
-                ? "border-2 border-primary bg-primary text-primary-foreground ring-4 ring-primary/20"
-                : "border-2 border-border bg-card text-muted-foreground",
-            )}
-          >
-            2
-          </div>
-          <div className="mt-2 text-center">
-            <p
-              className={cn(
-                "text-xs font-bold",
-                currentStep === 2 ? "text-foreground" : "text-muted-foreground",
-              )}
-            >
-              Step 2
-            </p>
-            <p className="text-[11px] text-muted-foreground whitespace-nowrap">
-              Review, Edit & Import
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /**
  * Builds Step 2 FieldConfigs and records for a single sheet
@@ -315,9 +265,7 @@ export function buildSheetRecordsAndConfigs(params: {
     "employee_name",
     "employee_code",
     "uan_no",
-    "uan_number",
     "esic_no",
-    "esic_number",
   ]);
 
   const allResultCols = columns || [];
@@ -335,13 +283,13 @@ export function buildSheetRecordsAndConfigs(params: {
     allResultCols.includes("uan_no") ||
     allResultCols.includes("uan_number")
   ) {
-    orderedFieldConfigs.push({ key: "uan_number", required: true });
+    orderedFieldConfigs.push({ key: "uan_no", required: true });
   }
   if (
     allResultCols.includes("esic_no") ||
     allResultCols.includes("esic_number")
   ) {
-    orderedFieldConfigs.push({ key: "esic_number" });
+    orderedFieldConfigs.push({ key: "esic_no" });
   }
 
   // 2. Attendance field configs
@@ -540,6 +488,7 @@ export function buildStep2DataFromAiResult(params: {
 export default function ImportSalaryPayroll() {
   const { env, companyId } = useLoaderData<typeof loader>();
   const location = useLocation();
+  const navigate = useNavigate();
   const { toast } = useToast();
   const { supabase } = useSupabase({ env });
 
@@ -552,6 +501,24 @@ export default function ImportSalaryPayroll() {
   const [isTransforming, setIsTransforming] = useState<boolean>(false);
   const [transformError, setTransformError] = useState<string | null>(null);
   const [transformStepText, setTransformStepText] = useState<string>("");
+  const [retryCountdown, setRetryCountdown] = useState<number | null>(null);
+  const [isQuotaError, setIsQuotaError] = useState<boolean>(false);
+
+  // Countdown timer for AI quota retry
+  useEffect(() => {
+    if (retryCountdown === null || retryCountdown <= 0) return;
+
+    const timer = setInterval(() => {
+      setRetryCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [retryCountdown]);
 
   const [fieldConfigs, setFieldConfigs] = useState<FieldConfig[]>([]);
   const [sheetsData, setSheetsData] = useState<SheetDataEntry[]>([]);
@@ -605,6 +572,11 @@ export default function ImportSalaryPayroll() {
     async (fileToProcess: File) => {
       setIsTransforming(true);
       setTransformError(null);
+      setRetryCountdown(null);
+      setIsQuotaError(false);
+      if (!selectedFile) {
+        setSelectedFile(fileToProcess);
+      }
       setTransformStepText("Reading uploaded file and preparing sheets...");
 
       try {
@@ -622,9 +594,12 @@ export default function ImportSalaryPayroll() {
 
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
-          throw new Error(
-            errData.error || `Server responded with status ${response.status}`,
-          );
+          const errMsg =
+            errData.error || `Server responded with status ${response.status}`;
+          const errObj = new Error(errMsg);
+          (errObj as any).retrySeconds = errData.retrySeconds;
+          (errObj as any).isQuotaError = errData.isQuotaError;
+          throw errObj;
         }
 
         const data: PayrollTransformJsonResult = await response.json();
@@ -666,20 +641,65 @@ export default function ImportSalaryPayroll() {
         setLoadNext(true);
       } catch (err: any) {
         console.error("AI Transformation Error:", err);
-        setTransformError(
+        const rawMsg =
           err.message ||
-            "An error occurred while transforming the file. Please try again.",
+          "An error occurred while transforming the file. Please try again.";
+
+        // Extract ceiling retry seconds
+        let seconds: number | null = (err as any).retrySeconds ?? null;
+        if (seconds === null) {
+          const match = rawMsg.match(/retry (?:in|after) ([0-9.]+)\s*s?/i);
+          if (match?.[1]) {
+            seconds = Math.ceil(Number.parseFloat(match[1]));
+          }
+        }
+
+        const quotaDetected = Boolean(
+          seconds !== null ||
+            (err as any).isQuotaError ||
+            /quota|rate[- ]limit|resource_exhausted|429/i.test(rawMsg),
         );
+
+        let displayError = rawMsg;
+        if (seconds !== null) {
+          displayError = displayError.replace(
+            /retry (?:in|after) [0-9.]+\s*s?/i,
+            `retry in ${seconds}s`,
+          );
+          if (
+            displayError.includes("generativelanguage.googleapis.com") ||
+            displayError.includes("Failed after 3 attempts")
+          ) {
+            displayError = `You exceeded your AI quota limit. Please retry in ${seconds}s.`;
+          }
+        } else if (quotaDetected) {
+          seconds = 15;
+          displayError =
+            "You exceeded your AI quota limit. Please retry in 15s.";
+        }
+
+        setTransformError(displayError);
+
+        if (quotaDetected && seconds !== null && seconds > 0) {
+          setIsQuotaError(true);
+          setRetryCountdown(seconds);
+        } else {
+          setIsQuotaError(false);
+          setRetryCountdown(null);
+        }
+
         toast({
-          title: "Transformation Failed",
-          description: err.message || "Unable to transform file with AI.",
+          title: quotaDetected
+            ? "AI Quota Limit Exceeded"
+            : "Transformation Failed",
+          description: displayError,
           variant: "destructive",
         });
       } finally {
         setIsTransforming(false);
       }
     },
-    [month, year, runDate, initialIntent, setImportData, toast],
+    [month, year, runDate, initialIntent, setImportData, toast, selectedFile],
   );
 
   // Automatically start transformation if file was passed from dialog
@@ -719,9 +739,14 @@ export default function ImportSalaryPayroll() {
   };
 
   return (
-    <section className="py-4">
-      <ImportPayrollStepper currentStep={loadNext ? 2 : 1} />
-
+    <div
+      className={cn(
+        "w-full",
+        loadNext
+          ? "h-[calc(100vh-135px)] max-h-[calc(100vh-135px)] flex flex-col overflow-hidden p-2 sm:p-3"
+          : "py-8 max-w-4xl mx-auto px-4",
+      )}
+    >
       {loadNext ? (
         <SalaryPayrollImportData
           env={env}
@@ -729,10 +754,16 @@ export default function ImportSalaryPayroll() {
           initialSheetsData={sheetsData}
           payrollId={payrollId || undefined}
           companyId={companyId}
-          onBack={() => setLoadNext(false)}
+          onBack={(finalPayrollId) => {
+            const targetId = finalPayrollId || payrollId;
+            const redirectUrl = targetId
+              ? `/payroll/run-payroll/${targetId}`
+              : "/payroll/run-payroll";
+            navigate(redirectUrl);
+          }}
         />
       ) : (
-        <div className="max-w-4xl mx-auto px-4 py-8">
+        <div className="w-full">
           <Card className="border shadow-lg overflow-hidden bg-card/90 backdrop-blur-xs">
             <CardHeader className="border-b bg-muted/20 pb-6">
               <div className="flex items-center justify-between">
@@ -817,23 +848,44 @@ export default function ImportSalaryPayroll() {
                   </div>
                   <div className="space-y-2 max-w-lg mx-auto">
                     <h3 className="text-lg font-semibold text-destructive">
-                      Transformation Failed
+                      {isQuotaError
+                        ? "AI Quota Limit Exceeded"
+                        : "Transformation Failed"}
                     </h3>
                     <p className="text-sm text-muted-foreground">
                       {transformError}
                     </p>
                   </div>
 
-                  <div className="flex justify-center gap-4 pt-2">
+                  <div className="flex justify-center items-center gap-4 pt-2">
                     {selectedFile && (
                       <Button
                         type="button"
                         variant="default"
-                        onClick={() => runAiTransformation(selectedFile)}
-                        className="gap-2"
+                        disabled={retryCountdown !== null && retryCountdown > 0}
+                        onClick={() => {
+                          setRetryCountdown(null);
+                          runAiTransformation(selectedFile);
+                        }}
+                        className={cn(
+                          "gap-2 font-semibold min-w-[120px] transition-all",
+                          retryCountdown !== null &&
+                            retryCountdown > 0 &&
+                            "opacity-70 cursor-not-allowed",
+                        )}
                       >
-                        <Icon name="update" size="sm" />
-                        Try Again with AI
+                        <Icon
+                          name="update"
+                          size="sm"
+                          className={
+                            retryCountdown !== null && retryCountdown > 0
+                              ? "animate-spin"
+                              : ""
+                          }
+                        />
+                        {retryCountdown !== null && retryCountdown > 0
+                          ? `Retry (${retryCountdown})`
+                          : "Retry"}
                       </Button>
                     )}
                     <label>
@@ -935,6 +987,6 @@ export default function ImportSalaryPayroll() {
           </Card>
         </div>
       )}
-    </section>
+    </div>
   );
 }

@@ -160,7 +160,7 @@ const SheetStructureSchema = z.object({
         cleanHeader: z
           .string()
           .describe(
-            "Standardized snake_case column name matching allowed payroll schema: employee_name, employee_code, uan_no, esic_no, working_days, present_days, ph, pl, cl, ml, el, ot_hours, ot_days, basic, da, hra, lta, ph_wage, ot_amount, allowance, fixed_allowance, other_allowance, conveyance_allowance, transportation_allowance, el_amount, leave_salary, bonus, gross, pf, esic, pt, lwf, deduction, advance, expense, net_pay, or other payment field involved in gross/net_pay calculation.",
+            "Standardized snake_case column name matching allowed payroll schema: employee_name, employee_code, uan_no, esic_no, working_days, present_days, ph, pl, cl, ml, el, ot_hours, ot_days, basic, da, hra, lta, ph_wage, ot_amount, allowance, fixed_allowance, other_allowance, conveyance_allowance, transportation_allowance, el_amount, leave_salary, bonus, gross, pf, esic, pt, lwf, deduction, advance, expense, net_pay, or other payment field involved in gross/net_pay calculation. STRICTLY FORBIDDEN SYNONYMS: NEVER use uan_number (use uan_no), never use esic_number (use esic_no), never use deductions/total_deduction/total_deductions (use deduction).",
           ),
         category: z
           .enum([
@@ -220,7 +220,11 @@ CRITICAL RULES & ALLOWED COLUMNS:
 
 2. STRICTLY ALLOWED COLUMNS:
    You may ONLY map kept columns to the following allowed names:
-   - Identity: employee_name (required), employee_code (can be name or number, min 2 chars), uan_no (required, can be name or number, min 2 chars), esic_no (can be name or number, min 2 chars)
+   - Identity:
+     * employee_name (required)
+     * employee_code (can be name or number, min 2 chars)
+     * uan_no (required, can be name or number, min 2 chars) - STRICT: NEVER use 'uan_number' or 'uan'. ALWAYS map to 'uan_no'.
+     * esic_no (can be name or number, min 2 chars) - STRICT: NEVER use 'esic_number', 'esi_no', or 'esi_number'. ALWAYS map to 'esic_no'.
    - Attendance:
      * working_days
      * present_days (required)
@@ -248,6 +252,7 @@ CRITICAL RULES & ALLOWED COLUMNS:
      * EL wages / encashment / EL amount columns (money amounts, not attendance days) map to el_amount (earning).
    - Deductions:
      * pf, esic, pt, lwf, deduction
+     * STRICT DEDUCTION RULE: NEVER use synonyms like 'deductions', 'total_deduction', 'total_deductions', or 'total_ded'. Map ANY total deduction or deduction summary column STRICTLY to 'deduction'. Only 'deduction' is allowed.
    - Special:
      * advance, expense (figure out whether earning or deduction based on calculation involvement in gross / net_pay: subtracted in net_pay -> deduction; added -> earning)
    - Payment:
@@ -873,7 +878,6 @@ export function getCanonicalHeaderPriority(
     case "lwf":
       return 106;
     case "deduction":
-    case "deductions":
       return 108;
     // Payment
     case "net_pay":
@@ -1437,11 +1441,11 @@ ${factSummary.formulaInsightLines.join("\n") || "- No formulas found"}
 Please analyze all rows and columns above:
 1. Identify headerRowIndex and secondaryHeaderRowIndex (if present).
 2. Determine dataStartRowIndex where the FIRST ACTUAL HUMAN EMPLOYEE record begins.
-3. Select columnsToKeep strictly matching allowed canonical payroll columns:
-   - Identity: employee_name (required), employee_code (can be name or number, min 2 chars), uan_no (required, can be name or number, min 2 chars), esic_no (can be name or number, min 2 chars).
+3. Select columnsToKeep strictly matching allowed canonical payroll columns (NO SYNONYMS):
+   - Identity: employee_name (required), employee_code (can be name or number, min 2 chars), uan_no (required, min 2 chars - NEVER use uan_number), esic_no (min 2 chars - NEVER use esic_number).
    - Attendance: working_days, present_days (required), ph, pl, cl, ml, el, ot_hours OR ot_days (only one! Required if ot_amount is present).
    - Earnings: basic (required), da, hra, lta, ph_wage, ot_amount, allowance, fixed_allowance, other_allowance, conveyance_allowance, transportation_allowance, el_amount, leave_salary, bonus, gross.
-   - Deductions: pf, esic, pt, lwf, deduction.
+   - Deductions: pf, esic, pt, lwf, deduction (NEVER use deductions or total_deduction, keep ONLY deduction).
    - Special: advance, expense.
    - Payment: net_pay.
 4. Select columnsToRemove:
@@ -1478,15 +1482,44 @@ Please analyze all rows and columns above:
     }
 
     if (!analysisSuccess) {
-      if (sheetNames.length === 1) {
-        throw new Error(
-          `AI analysis failed for "${sheetName}": ${lastErr?.message || String(lastErr)}`,
-        );
+      const isQuota = /quota|rate[- ]limit|resource_exhausted|retry in/i.test(
+        lastErr?.message || "",
+      );
+      if (isQuota || sheetNames.length === 1) {
+        let msg = lastErr?.message || String(lastErr);
+        const retryMatch = msg.match(/retry (?:in|after) ([0-9.]+)\s*s?/i);
+        if (retryMatch?.[1]) {
+          const ceilSecs = Math.ceil(Number.parseFloat(retryMatch[1]));
+          msg = msg.replace(
+            /retry (?:in|after) [0-9.]+\s*s?/i,
+            `retry in ${ceilSecs}s`,
+          );
+        }
+        throw new Error(`AI analysis failed for "${sheetName}": ${msg}`);
       }
       continue;
     }
 
     const ai = aiResult!;
+
+    // Helper to normalize any stray synonyms deterministically to canonical names
+    const normalizeCanonicalHeader = (header: string): string => {
+      const h = header.trim().toLowerCase();
+      if (h === "uan_number" || h === "uan") return "uan_no";
+      if (h === "esic_number" || h === "esi_no" || h === "esi_number")
+        return "esic_no";
+      if (
+        h === "deductions" ||
+        h === "total_deduction" ||
+        h === "total_deductions" ||
+        h === "total_ded" ||
+        h === "tot_ded" ||
+        h === "tot_deduction"
+      ) {
+        return "deduction";
+      }
+      return h;
+    };
 
     // Step 3: Determine target columns to keep
     const initialKeptCols: Array<{
@@ -1495,12 +1528,21 @@ Please analyze all rows and columns above:
       category: string;
     }> = [];
 
+    const seenCanonicalKeys = new Set<string>();
     for (const col of ai.columnsToKeep) {
       if (typeof col.colIndex === "number" && col.colIndex >= 0) {
+        const clean = normalizeCanonicalHeader(col.cleanHeader);
+        // Avoid duplicate mappings for single canonical keys
+        if (
+          ["uan_no", "esic_no", "deduction", "gross", "net_pay"].includes(clean)
+        ) {
+          if (seenCanonicalKeys.has(clean)) continue;
+          seenCanonicalKeys.add(clean);
+        }
         initialKeptCols.push({
           colIndex: col.colIndex,
-          cleanHeader: col.cleanHeader,
-          category: col.category,
+          cleanHeader: clean,
+          category: clean === "deduction" ? "deduction" : col.category,
         });
       }
     }
@@ -2003,6 +2045,18 @@ Please analyze all rows and columns above:
   }
 
   if (newWorkbook.SheetNames.length === 0 || !firstSheetResult) {
+    if (lastErr) {
+      let msg = lastErr?.message || String(lastErr);
+      const retryMatch = msg.match(/retry (?:in|after) ([0-9.]+)\s*s?/i);
+      if (retryMatch?.[1]) {
+        const ceilSecs = Math.ceil(Number.parseFloat(retryMatch[1]));
+        msg = msg.replace(
+          /retry (?:in|after) [0-9.]+\s*s?/i,
+          `retry in ${ceilSecs}s`,
+        );
+      }
+      throw new Error(`AI analysis failed: ${msg}`);
+    }
     throw new Error(
       `No valid employee payroll data could be extracted from "${filename}".`,
     );

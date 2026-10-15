@@ -1,4 +1,3 @@
-import { LoadingSpinner } from "@/components/loading-spinner";
 import { useImportStoreForSalaryPayroll } from "@/store/import";
 import { useSupabase } from "@canny_ecosystem/supabase/client";
 import { getMonthlyAttendanceByEmployeeIds } from "@canny_ecosystem/supabase/queries";
@@ -38,7 +37,7 @@ import { useToast } from "@canny_ecosystem/ui/use-toast";
 import { cn } from "@canny_ecosystem/ui/utils/cn";
 import { replaceUnderscore } from "@canny_ecosystem/utils";
 import { useNavigate, useNavigation } from "@remix-run/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CreateUnmatchedEmployeePanel } from "@/components/employees/import-export/create-unmatched-employee-panel";
 import type {
@@ -47,6 +46,7 @@ import type {
 } from "@/routes/_protected+/payroll+/run-payroll+/import-salary-payroll+/_index";
 import { ImportedDataColumns } from "../salary-imported-table/columns";
 import { ImportedDataTable } from "../salary-imported-table/imported-data-table";
+import { NON_DELETABLE_KEYS } from "../salary-imported-table/imported-data-table-headers";
 
 const isValidIdentifier = (val: any) => {
   if (!val) return false;
@@ -114,10 +114,7 @@ const getInsertIndexForNewColumn = (
 
   // "and same in deduction it should be just beside deduction"
   const totalDedIdx = configs.findIndex(
-    (f) =>
-      f.key.toLowerCase() === "total_deductions" ||
-      f.key.toLowerCase() === "total_deduction" ||
-      f.key.toLowerCase() === "deduction",
+    (f) => f.key.toLowerCase() === "deduction",
   );
   if (totalDedIdx !== -1) {
     return totalDedIdx;
@@ -154,7 +151,7 @@ export function SalaryPayrollImportData({
   initialSheetsData?: SheetDataEntry[];
   payrollId?: string;
   companyId: string;
-  onBack?: () => void;
+  onBack?: (payrollId?: string) => void;
 }) {
   const navigation = useNavigation();
   const navigate = useNavigate();
@@ -226,6 +223,135 @@ export function SalaryPayrollImportData({
   const [newColDefaultAmount, setNewColDefaultAmount] = useState<number>(0);
 
   const [colToDelete, setColToDelete] = useState<string | null>(null);
+
+  // Undo / Redo history stacks (stores up to 30 snapshots of all sheets data)
+  const [undoStack, setUndoStack] = useState<SheetDataEntry[][]>([]);
+  const [redoStack, setRedoStack] = useState<SheetDataEntry[][]>([]);
+  const [conflictingIndices, setConflictingIndices] = useState<number[]>([]);
+
+  // Horizontal scroll tracking for Sheets tab bar
+  const sheetsScrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+
+  const checkSheetsScroll = useCallback(() => {
+    const el = sheetsScrollRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 4);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 6);
+  }, []);
+
+  useEffect(() => {
+    checkSheetsScroll();
+    const timer = setTimeout(checkSheetsScroll, 80);
+    window.addEventListener("resize", checkSheetsScroll);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", checkSheetsScroll);
+    };
+  }, [checkSheetsScroll, sheetsData]);
+
+  useEffect(() => {
+    const el = sheetsScrollRef.current;
+    if (!el) return;
+    const activeBtn = el.querySelector(
+      `[data-active="true"]`,
+    ) as HTMLElement | null;
+    if (activeBtn) {
+      activeBtn.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "nearest",
+      });
+    }
+    checkSheetsScroll();
+  }, [activeSheetIndex, checkSheetsScroll]);
+
+  const pushToHistory = useCallback((currentSheets: SheetDataEntry[]) => {
+    setUndoStack((prev) => [
+      ...prev.slice(-29),
+      structuredClone(currentSheets),
+    ]);
+    setRedoStack([]);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    if (undoStack.length === 0) return;
+    const previousState = undoStack[undoStack.length - 1];
+    const newUndoStack = undoStack.slice(0, -1);
+
+    setRedoStack((prev) => [...prev.slice(-29), structuredClone(sheetsData)]);
+    setUndoStack(newUndoStack);
+    setSheetsData(previousState);
+
+    const safeSheetIdx = Math.min(activeSheetIndex, previousState.length - 1);
+    const currentSheet = previousState[safeSheetIdx];
+    if (currentSheet) {
+      setImportData({
+        ...importData,
+        data: currentSheet.records,
+      });
+    }
+  }, [undoStack, sheetsData, activeSheetIndex, importData, setImportData]);
+
+  const handleRedo = useCallback(() => {
+    if (redoStack.length === 0) return;
+    const nextState = redoStack[redoStack.length - 1];
+    const newRedoStack = redoStack.slice(0, -1);
+
+    setUndoStack((prev) => [...prev.slice(-29), structuredClone(sheetsData)]);
+    setRedoStack(newRedoStack);
+    setSheetsData(nextState);
+
+    const safeSheetIdx = Math.min(activeSheetIndex, nextState.length - 1);
+    const currentSheet = nextState[safeSheetIdx];
+    if (currentSheet) {
+      setImportData({
+        ...importData,
+        data: currentSheet.records,
+      });
+    }
+  }, [redoStack, sheetsData, activeSheetIndex, importData, setImportData]);
+
+  // Global keyboard shortcuts for Undo (Ctrl+Z / Cmd+Z) and Redo (Ctrl+Y / Cmd+Y / Cmd+Shift+Z)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const isMac =
+        typeof navigator !== "undefined" &&
+        navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+      const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+      if (!cmdOrCtrl) return;
+
+      if (e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+
+      if (
+        e.key.toLowerCase() === "y" ||
+        (e.key.toLowerCase() === "z" && e.shiftKey)
+      ) {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [handleUndo, handleRedo]);
 
   // Fetch all company employees and sites once (or on refreshTrigger)
   useEffect(() => {
@@ -417,9 +543,9 @@ export function SalaryPayrollImportData({
       const isCodeEmpty =
         !(item as any).employee_code ||
         String((item as any).employee_code).trim() === "";
-      const isUanEmpty =
-        !(item as any).uan_number ||
-        String((item as any).uan_number).trim() === "";
+      const rowUan = item.uan_no || (item as any).uan_number;
+      const rowEsic = item.esic_no || (item as any).esic_number;
+      const isUanEmpty = !rowUan || String(rowUan).trim() === "";
       const isSiteHeader = !!nameMatchingSite && isCodeEmpty && isUanEmpty;
 
       if (isSiteHeader) {
@@ -434,8 +560,8 @@ export function SalaryPayrollImportData({
       }
 
       const itemCode = normalize(item.employee_code);
-      const itemUan = normalize(item.uan_number);
-      const itemEsic = normalize(item.esic_number);
+      const itemUan = normalize(rowUan);
+      const itemEsic = normalize(rowEsic);
       const sheetName = item.sheet_name || activeSheet?.sheetName;
       const activeSite = currentSiteName || sheetName;
 
@@ -453,7 +579,7 @@ export function SalaryPayrollImportData({
 
         const uan = statutoryDetails?.uan_number;
         if (
-          isValidIdentifier(item.uan_number) &&
+          isValidIdentifier(rowUan) &&
           isValidIdentifier(uan) &&
           normalize(uan) === itemUan
         )
@@ -461,7 +587,7 @@ export function SalaryPayrollImportData({
 
         const esic = statutoryDetails?.esic_number;
         if (
-          isValidIdentifier(item.esic_number) &&
+          isValidIdentifier(rowEsic) &&
           isValidIdentifier(esic) &&
           normalize(esic) === itemEsic
         )
@@ -585,13 +711,43 @@ export function SalaryPayrollImportData({
         employee_code: finalMatchedData
           ? finalMatchedData.employee_code
           : item.employee_code,
-        uan_number:
-          item.uan_number ||
+        uan_no:
+          item.uan_no ||
+          (item as any).uan_number ||
           (finalMatchedData && "employee_statutory_details" in finalMatchedData
             ? Array.isArray(finalMatchedData.employee_statutory_details)
               ? (finalMatchedData.employee_statutory_details[0] as any)
                   ?.uan_number
               : (finalMatchedData.employee_statutory_details as any)?.uan_number
+            : undefined),
+        esic_no:
+          item.esic_no ||
+          (item as any).esic_number ||
+          (finalMatchedData && "employee_statutory_details" in finalMatchedData
+            ? Array.isArray(finalMatchedData.employee_statutory_details)
+              ? (finalMatchedData.employee_statutory_details[0] as any)
+                  ?.esic_number
+              : (finalMatchedData.employee_statutory_details as any)
+                  ?.esic_number
+            : undefined),
+        uan_number:
+          item.uan_no ||
+          (item as any).uan_number ||
+          (finalMatchedData && "employee_statutory_details" in finalMatchedData
+            ? Array.isArray(finalMatchedData.employee_statutory_details)
+              ? (finalMatchedData.employee_statutory_details[0] as any)
+                  ?.uan_number
+              : (finalMatchedData.employee_statutory_details as any)?.uan_number
+            : undefined),
+        esic_number:
+          item.esic_no ||
+          (item as any).esic_number ||
+          (finalMatchedData && "employee_statutory_details" in finalMatchedData
+            ? Array.isArray(finalMatchedData.employee_statutory_details)
+              ? (finalMatchedData.employee_statutory_details[0] as any)
+                  ?.esic_number
+              : (finalMatchedData.employee_statutory_details as any)
+                  ?.esic_number
             : undefined),
         is_new_employee: !finalMatchedData,
         employee_id: employeeId,
@@ -784,20 +940,8 @@ export function SalaryPayrollImportData({
                 "earning",
               );
             }
-          } else if (
-            isDeduction &&
-            lowerColKey !== "total_deductions" &&
-            lowerColKey !== "total_deduction" &&
-            lowerColKey !== "deduction"
-          ) {
-            const dedKey =
-              "total_deductions" in newItem
-                ? "total_deductions"
-                : "total_deduction" in newItem
-                  ? "total_deduction"
-                  : "deduction" in newItem
-                    ? "deduction"
-                    : null;
+          } else if (isDeduction && lowerColKey !== "deduction") {
+            const dedKey = "deduction" in newItem ? "deduction" : null;
             if (dedKey) {
               const curDed = getRecordAmount(newItem[dedKey]);
               newItem[dedKey] = setRecordAmount(
@@ -853,6 +997,24 @@ export function SalaryPayrollImportData({
   // Cell change handler
   const handleCellChange = useCallback(
     (rowIndex: number, colKey: string, rawNewValue: string) => {
+      const targetRecord = activeRecords[rowIndex];
+      if (
+        targetRecord?.has_error ||
+        targetRecord?.is_disabled ||
+        conflictingIndices.includes(rowIndex)
+      ) {
+        toast({
+          title: "Row Disabled",
+          description:
+            targetRecord?.error_message ||
+            "This row has an error and is disabled for mutations.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      pushToHistory(sheetsData);
+
       setSheetsData((prevSheets) => {
         const updated = [...prevSheets];
         const sheet = { ...updated[activeSheetIndex] };
@@ -870,7 +1032,16 @@ export function SalaryPayrollImportData({
         return updated;
       });
     },
-    [activeSheetIndex, activeFieldConfigs, updateCellValue],
+    [
+      activeRecords,
+      conflictingIndices,
+      sheetsData,
+      pushToHistory,
+      activeSheetIndex,
+      activeFieldConfigs,
+      updateCellValue,
+      toast,
+    ],
   );
 
   // Bulk cell change handler (e.g. from copy-paste)
@@ -878,11 +1049,23 @@ export function SalaryPayrollImportData({
     (
       updates: Array<{ rowIndex: number; colKey: string; newValue: string }>,
     ) => {
+      const validUpdates = updates.filter(({ rowIndex }) => {
+        const rec = activeRecords[rowIndex];
+        return (
+          !rec?.has_error &&
+          !rec?.is_disabled &&
+          !conflictingIndices.includes(rowIndex)
+        );
+      });
+      if (validUpdates.length === 0) return;
+
+      pushToHistory(sheetsData);
+
       setSheetsData((prevSheets) => {
         const updated = [...prevSheets];
         const sheet = { ...updated[activeSheetIndex] };
         const records = [...sheet.records];
-        for (const { rowIndex, colKey, newValue } of updates) {
+        for (const { rowIndex, colKey, newValue } of validUpdates) {
           if (rowIndex >= 0 && rowIndex < records.length) {
             records[rowIndex] = updateCellValue(
               records[rowIndex],
@@ -897,7 +1080,15 @@ export function SalaryPayrollImportData({
         return updated;
       });
     },
-    [activeSheetIndex, activeFieldConfigs, updateCellValue],
+    [
+      activeRecords,
+      conflictingIndices,
+      sheetsData,
+      pushToHistory,
+      activeSheetIndex,
+      activeFieldConfigs,
+      updateCellValue,
+    ],
   );
 
   // Switch sheet handler: preserves all changes of current and target sheet
@@ -934,6 +1125,8 @@ export function SalaryPayrollImportData({
     const colType = (newColType === "deduction" ? "deduction" : "earning") as
       | "earning"
       | "deduction";
+
+    pushToHistory(sheetsData);
 
     setSheetsData((prevSheets) => {
       const updated = [...prevSheets];
@@ -978,14 +1171,7 @@ export function SalaryPayrollImportData({
             }
           } else {
             // "and same in deduction it should be just beside deduction, deduction total increase and net pay change accordingly"
-            const dedKey =
-              "total_deductions" in newRec
-                ? "total_deductions"
-                : "total_deduction" in newRec
-                  ? "total_deduction"
-                  : "deduction" in newRec
-                    ? "deduction"
-                    : null;
+            const dedKey = "deduction" in newRec ? "deduction" : null;
             if (dedKey) {
               const curDed = getRecordAmount(newRec[dedKey]);
               newRec[dedKey] = setRecordAmount(
@@ -1014,12 +1200,6 @@ export function SalaryPayrollImportData({
       return updated;
     });
 
-    toast({
-      title: "Column Added",
-      description: `Added "${cleanName}" (${colType}) to sheet "${activeSheet.sheetName}".`,
-      variant: "success",
-    });
-
     setIsAddColOpen(false);
     setNewColName("");
     setNewColDefaultAmount(0);
@@ -1037,10 +1217,9 @@ export function SalaryPayrollImportData({
       targetKey !== "gross" &&
       targetKey !== "net_pay";
     const isDeduction =
-      targetConfig?.type === "deduction" &&
-      targetKey !== "total_deductions" &&
-      targetKey !== "total_deduction" &&
-      targetKey !== "deduction";
+      targetConfig?.type === "deduction" && targetKey !== "deduction";
+
+    pushToHistory(sheetsData);
 
     setSheetsData((prevSheets) => {
       const updated = [...prevSheets];
@@ -1072,14 +1251,7 @@ export function SalaryPayrollImportData({
               );
             }
           } else if (isDeduction) {
-            const dedKey =
-              "total_deductions" in copy
-                ? "total_deductions"
-                : "total_deduction" in copy
-                  ? "total_deduction"
-                  : "deduction" in copy
-                    ? "deduction"
-                    : null;
+            const dedKey = "deduction" in copy ? "deduction" : null;
             if (dedKey) {
               const curDed = getRecordAmount(copy[dedKey]);
               copy[dedKey] = setRecordAmount(
@@ -1099,7 +1271,7 @@ export function SalaryPayrollImportData({
           }
         }
 
-        delete copy[targetKey];
+        // Keep copy[targetKey] intact so row values are preserved
         return copy;
       });
       sheet.fieldConfigs = newConfigs;
@@ -1108,34 +1280,112 @@ export function SalaryPayrollImportData({
       return updated;
     });
 
-    toast({
-      title: "Column Deleted",
-      description: `Column "${colToDelete}" removed from sheet "${activeSheet.sheetName}".`,
-      variant: "success",
-    });
-
     setColToDelete(null);
   };
+
+  // Rename Column handler
+  const handleRenameColumn = useCallback(
+    (oldKey: string, newName: string) => {
+      const cleanName = newName.trim();
+      if (!cleanName) return;
+      const newKey = cleanName.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+      if (oldKey.toLowerCase() === newKey.toLowerCase()) return;
+
+      if (NON_DELETABLE_KEYS.has(newKey.toLowerCase())) {
+        toast({
+          title: "Reserved Column Name",
+          description: `"${cleanName}" is a reserved system column name.`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (
+        activeFieldConfigs.some(
+          (f) =>
+            f.key.toLowerCase() === newKey.toLowerCase() &&
+            f.key.toLowerCase() !== oldKey.toLowerCase(),
+        )
+      ) {
+        toast({
+          title: "Column Already Exists",
+          description: `A column named "${cleanName}" already exists on sheet "${activeSheet.sheetName}".`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      pushToHistory(sheetsData);
+
+      setSheetsData((prevSheets) => {
+        const updated = [...prevSheets];
+        const sheet = { ...updated[activeSheetIndex] };
+
+        // 1. Update fieldConfigs
+        const newConfigs = sheet.fieldConfigs.map((f) => {
+          if (f.key.toLowerCase() === oldKey.toLowerCase()) {
+            return { ...f, key: newKey };
+          }
+          return f;
+        });
+
+        // 2. Update records keys
+        const newRecords = sheet.records.map((rec) => {
+          const copy = { ...rec };
+          if (oldKey in copy) {
+            copy[newKey] = copy[oldKey];
+            delete copy[oldKey];
+          }
+          return copy;
+        });
+
+        sheet.fieldConfigs = newConfigs;
+        sheet.records = newRecords;
+        updated[activeSheetIndex] = sheet;
+        return updated;
+      });
+    },
+    [activeFieldConfigs, activeSheetIndex],
+  );
 
   // Bulk Delete Rows handler
   const confirmBulkDelete = () => {
     if (deleteConfirmText !== "DELETE" || indicesToDelete.length === 0) return;
 
+    // Do not delete rows that are disabled or have errors
+    const validIndicesToDelete = indicesToDelete.filter((idx) => {
+      const rec = activeRecords[idx];
+      return (
+        !rec?.has_error &&
+        !rec?.is_disabled &&
+        !conflictingIndices.includes(idx)
+      );
+    });
+
+    if (validIndicesToDelete.length === 0) {
+      toast({
+        title: "Action Skipped",
+        description:
+          "Selected rows are disabled or have errors and cannot be deleted.",
+        variant: "warning",
+      });
+      setIsBulkDeleteOpen(false);
+      setDeleteConfirmText("");
+      setIndicesToDelete([]);
+      return;
+    }
+
+    pushToHistory(sheetsData);
+
     setSheetsData((prevSheets) => {
       const updated = [...prevSheets];
       const sheet = { ...updated[activeSheetIndex] };
-      const targetSet = new Set(indicesToDelete);
+      const targetSet = new Set(validIndicesToDelete);
       // Strictly preserves original Excel relative order
       const remaining = sheet.records.filter((_, idx) => !targetSet.has(idx));
       sheet.records = remaining;
       updated[activeSheetIndex] = sheet;
       return updated;
-    });
-
-    toast({
-      title: "Rows Deleted",
-      description: `Removed ${indicesToDelete.length} row(s) from sheet "${activeSheet.sheetName}".`,
-      variant: "success",
     });
 
     setIsBulkDeleteOpen(false);
@@ -1147,6 +1397,8 @@ export function SalaryPayrollImportData({
   const confirmBulkUpdate = () => {
     if (!bulkColKey || bulkValue === "") return;
 
+    pushToHistory(sheetsData);
+
     setSheetsData((prevSheets) => {
       const updated = [...prevSheets];
       const sheet = { ...updated[activeSheetIndex] };
@@ -1155,23 +1407,20 @@ export function SalaryPayrollImportData({
 
       const records = sheet.records.map((rec, idx) => {
         if (targetSet && !targetSet.has(idx)) return rec;
+        // Skip disabled rows or rows with error
+        if (
+          rec.has_error ||
+          rec.is_disabled ||
+          conflictingIndices.includes(idx)
+        ) {
+          return rec;
+        }
         return updateCellValue(rec, bulkColKey, bulkValue, activeFieldConfigs);
       });
 
       sheet.records = records;
       updated[activeSheetIndex] = sheet;
       return updated;
-    });
-
-    const count =
-      bulkScope === "selected"
-        ? selectedIndicesForBulk.length
-        : activeSheet.records.length;
-
-    toast({
-      title: "Bulk Update Applied",
-      description: `Updated column "${bulkColKey}" for ${count} row(s).`,
-      variant: "success",
     });
 
     setIsBulkUpdateOpen(false);
@@ -1275,31 +1524,94 @@ export function SalaryPayrollImportData({
 
         if (invalidEntries.length > 0) {
           setIsImporting(false);
+          const invalidEmpIds = new Set(
+            invalidEntries.map((e) => e.employee_id).filter(Boolean),
+          );
+
+          // Find row indices in tableData to highlight and disable
+          const badIndices: number[] = [];
+          tableData.forEach((row, idx) => {
+            if (row.employee_id && invalidEmpIds.has(row.employee_id)) {
+              badIndices.push(idx);
+            }
+          });
+          setConflictingIndices(badIndices);
+
+          // Mark records on current sheet with has_error and is_disabled
+          setSheetsData((prevSheets) => {
+            const updated = [...prevSheets];
+            const sheet = { ...updated[activeSheetIndex] };
+            sheet.records = sheet.records.map((rec) => {
+              if (rec.employee_id && invalidEmpIds.has(rec.employee_id)) {
+                return {
+                  ...rec,
+                  has_error: true,
+                  is_disabled: true,
+                  error_message:
+                    "Attendance present days mismatch with database records. Please update attendance.",
+                };
+              }
+              return rec;
+            });
+            updated[activeSheetIndex] = sheet;
+            return updated;
+          });
+
           toast({
-            title: "Import Failed",
-            description:
-              "Attendance present day and sheet present days differ for some employees. Please update attendance.",
+            title: "Import Failed - Rows Disabled",
+            description: `${invalidEntries.length} employee row(s) have attendance mismatch and have been disabled for mutations.`,
             variant: "destructive",
           });
           return;
         }
       }
 
-      // Clean payload
+      // Clean payload - only include active field configs and system/attendance keys
+      const activeKeys = new Set(
+        activeFieldConfigs.map((f) => f.key.toLowerCase()),
+      );
+      const systemKeys = new Set([
+        "employee_id",
+        "month",
+        "year",
+        "salary_entry_id",
+        "working_days",
+        "present_days",
+        "working_hours",
+        "overtime_hours",
+        "absent_days",
+        "paid_holidays",
+        "paid_leaves",
+        "casual_leaves",
+      ]);
+
       const cleanedData = readyRows.map((item) => {
         const {
           employee_code,
           uan_number,
+          uan_no,
           esic_number,
+          esic_no,
           is_new_employee,
           sheet_name,
           has_existing_salary_entry,
           avatar,
           is_site_header,
           raw_row,
+          has_error,
+          is_disabled,
+          error_message,
           ...rest
         } = item;
-        return rest;
+
+        const filtered: Record<string, any> = {};
+        for (const [k, v] of Object.entries(rest)) {
+          const lk = k.toLowerCase();
+          if (activeKeys.has(lk) || systemKeys.has(lk)) {
+            filtered[k] = v;
+          }
+        }
+        return filtered;
       });
 
       const updatedCount = readyRows.length;
@@ -1360,7 +1672,7 @@ export function SalaryPayrollImportData({
         readyRows.map((r) => r.employee_code).filter(Boolean),
       );
       const importedUans = new Set(
-        readyRows.map((r) => r.uan_number).filter(Boolean),
+        readyRows.map((r) => r.uan_no || r.uan_number).filter(Boolean),
       );
 
       // Remaining rows strictly maintain their original Excel order
@@ -1369,7 +1681,8 @@ export function SalaryPayrollImportData({
           return false;
         if (rec.employee_code && importedCodes.has(rec.employee_code))
           return false;
-        if (rec.uan_number && importedUans.has(rec.uan_number)) return false;
+        const recUan = rec.uan_no || rec.uan_number;
+        if (recUan && importedUans.has(recUan)) return false;
         return true;
       });
 
@@ -1429,58 +1742,129 @@ export function SalaryPayrollImportData({
     sheetsData.length > 0 && sheetsData.every((s) => s.isImported);
 
   return (
-    <section className="px-4 relative">
-      <div
-        className={cn(
-          "fixed inset-0 z-50 bg-background/80",
-          isImporting ? "block" : "hidden",
-        )}
-      >
-        <LoadingSpinner className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 m-0" />
-      </div>
+    <div className="w-full h-full flex-1 flex flex-col min-h-0 overflow-hidden relative">
+      {/* Step 2 Import Loader Overlay */}
+      {isImporting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-md transition-all animate-in fade-in duration-200">
+          <div className="flex flex-col items-center justify-center space-y-4 p-8 bg-card/95 border rounded-2xl shadow-2xl max-w-sm text-center">
+            <div className="relative">
+              <div className="w-16 h-16 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
+              <div className="absolute inset-0 flex items-center justify-center">
+                <Icon
+                  name="import"
+                  size="md"
+                  className="text-primary animate-pulse"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-base font-bold text-foreground">
+                Importing Sheet "{activeSheet.sheetName}"
+              </h3>
+              <p className="text-xs text-muted-foreground font-medium">
+                Uploading {activeSheet.records.length} employee records to
+                payroll...
+              </p>
+              <p className="text-[11px] text-muted-foreground/70">
+                Please do not close or refresh this tab.
+              </p>
+            </div>
+            <div className="w-full bg-muted/60 rounded-full h-1.5 overflow-hidden">
+              <div className="bg-primary h-full rounded-full animate-pulse w-3/4" />
+            </div>
+          </div>
+        </div>
+      )}
 
-      {/* Multi-Sheet Filter / Tabs switcher */}
+      {/* Multi-Sheet Filter / Tabs switcher - Single-line horizontally scrollable with indicator */}
       {sheetsData.length > 1 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 p-3 mb-4 bg-card border rounded-xl shadow-xs">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground mr-1 flex items-center gap-1.5">
+        <div className="flex items-center justify-between gap-3 p-2.5 mb-4 bg-card border rounded-xl shadow-xs shrink-0 relative">
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground mr-1 flex items-center gap-1.5 shrink-0">
               <Icon name="table" size="xs" />
               Sheets:
             </span>
-            {sheetsData.map((sheet, idx) => {
-              const isActive = idx === activeSheetIndex;
-              return (
-                <button
-                  key={sheet.sheetName}
-                  type="button"
-                  onClick={() => handleSwitchSheet(idx)}
-                  className={cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer",
-                    isActive
-                      ? "bg-primary/10 border-primary text-primary font-bold shadow-xs ring-1 ring-primary/30"
-                      : "bg-background border-border hover:bg-muted/50 text-foreground",
-                  )}
-                >
-                  <span>{sheet.sheetName}</span>
-                  <span className="text-[11px] text-muted-foreground">
-                    ({sheet.records.length})
-                  </span>
-                  {sheet.isImported ? (
-                    <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.2 rounded-full font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
-                      <Icon name="check" size="xs" />
-                      Imported
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center text-[10px] px-1.5 py-0.2 rounded-full font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
-                      Pending
-                    </span>
-                  )}
-                </button>
-              );
-            })}
           </div>
 
-          <div className="text-xs text-muted-foreground font-medium flex items-center gap-2">
+          {/* Horizontally scrollable sheet tabs */}
+          <div className="flex-1 min-w-0 relative flex items-center overflow-hidden">
+            {canScrollLeft && (
+              <div className="absolute left-0 top-0 bottom-0 z-10 flex items-center bg-gradient-to-r from-card via-card/95 to-transparent pr-6">
+                <button
+                  type="button"
+                  onClick={() => {
+                    sheetsScrollRef.current?.scrollBy({
+                      left: -220,
+                      behavior: "smooth",
+                    });
+                  }}
+                  className="flex items-center justify-center w-6 h-7 rounded-md bg-background/95 hover:bg-muted border shadow-xs text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+                  title="Scroll left"
+                >
+                  <Icon name="chevron-left" size="xs" />
+                </button>
+              </div>
+            )}
+
+            <div
+              ref={sheetsScrollRef}
+              onScroll={checkSheetsScroll}
+              className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden py-0.5 px-0.5 w-full scroll-smooth"
+            >
+              {sheetsData.map((sheet, idx) => {
+                const isActive = idx === activeSheetIndex;
+                return (
+                  <button
+                    key={sheet.sheetName}
+                    data-active={isActive ? "true" : "false"}
+                    type="button"
+                    onClick={() => handleSwitchSheet(idx)}
+                    className={cn(
+                      "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer shrink-0 whitespace-nowrap",
+                      isActive
+                        ? "bg-primary/10 border-primary text-primary font-bold shadow-xs ring-1 ring-primary/30"
+                        : "bg-background border-border hover:bg-muted/50 text-foreground",
+                    )}
+                  >
+                    <span>{sheet.sheetName}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      ({sheet.records.length})
+                    </span>
+                    {sheet.isImported ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.2 rounded-full font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
+                        <Icon name="check" size="xs" />
+                        Imported
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center text-[10px] px-1.5 py-0.2 rounded-full font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                        Pending
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {canScrollRight && (
+              <div className="absolute right-0 top-0 bottom-0 z-10 flex items-center bg-gradient-to-l from-card via-card/95 to-transparent pl-6">
+                <button
+                  type="button"
+                  onClick={() => {
+                    sheetsScrollRef.current?.scrollBy({
+                      left: 220,
+                      behavior: "smooth",
+                    });
+                  }}
+                  className="flex items-center justify-center w-6 h-7 rounded-md bg-background/95 hover:bg-muted border shadow-xs text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+                  title="Scroll right"
+                >
+                  <Icon name="chevron-right" size="xs" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="text-xs text-muted-foreground font-medium flex items-center gap-2 shrink-0 pl-3 border-l">
             <span>
               Progress:{" "}
               <strong className="text-foreground">
@@ -1494,21 +1878,29 @@ export function SalaryPayrollImportData({
         </div>
       )}
 
-      {/* Header controls: Search & Import buttons */}
-      <div className="w-full flex items-center justify-between pb-4">
+      {/* Header controls: Search & Import buttons with comfortable vertical spacing */}
+      <div className="w-full flex items-center justify-between mb-4 shrink-0">
         <div className="w-full flex justify-between items-center gap-4">
           <div className="flex items-center gap-3">
-            {onBack && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-10 text-xs gap-1.5 border-primary/20 text-primary hover:bg-primary/5 shrink-0"
-                onClick={onBack}
-              >
-                <Icon name="chevron-left" size="sm" />
-                Back
-              </Button>
-            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-10 text-xs gap-1.5 border-primary/20 text-primary hover:bg-primary/5 shrink-0"
+              onClick={() => {
+                const targetPayrollId = currentPayrollId || propPayrollId;
+                if (onBack) {
+                  onBack(targetPayrollId);
+                } else {
+                  const redirectUrl = targetPayrollId
+                    ? `/payroll/run-payroll/${targetPayrollId}`
+                    : "/payroll/run-payroll";
+                  navigate(redirectUrl);
+                }
+              }}
+            >
+              <Icon name="chevron-left" size="sm" />
+              Back
+            </Button>
             <div className="relative w-[28rem] max-w-full">
               <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none">
                 <Icon
@@ -1551,16 +1943,52 @@ export function SalaryPayrollImportData({
                 Sheet "{activeSheet.sheetName}" Imported
               </Button>
             ) : (
-              <Button
-                variant="default"
-                onClick={handleFinalImport}
-                disabled={isImporting || activeSheet.records.length === 0}
-                className="gap-2 font-semibold shadow-sm"
-              >
-                <Icon name="import" size="sm" />
-                Import Sheet "{activeSheet.sheetName}" (
-                {activeSheet.records.length})
-              </Button>
+              <div className="flex items-center gap-2.5">
+                {unmatchedEmployees.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setShowUnmatchedView(true)}
+                    className="gap-2 font-semibold border-amber-500/60 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500 shadow-xs animate-pulse"
+                  >
+                    <Icon
+                      name="employee"
+                      size="sm"
+                      className="text-amber-500"
+                    />
+                    New Employees ({unmatchedEmployees.length})
+                  </Button>
+                )}
+
+                <Button
+                  variant="default"
+                  onClick={handleFinalImport}
+                  disabled={
+                    isImporting ||
+                    activeSheet.records.length === 0 ||
+                    unmatchedEmployees.length > 0
+                  }
+                  className="gap-2 font-semibold shadow-sm min-w-[190px]"
+                  title={
+                    unmatchedEmployees.length > 0
+                      ? "Resolve new employees before importing"
+                      : undefined
+                  }
+                >
+                  {isImporting ? (
+                    <>
+                      <Icon name="update" size="sm" className="animate-spin" />
+                      Importing Sheet...
+                    </>
+                  ) : (
+                    <>
+                      <Icon name="import" size="sm" />
+                      Import Sheet "{activeSheet.sheetName}" (
+                      {activeSheet.records.length})
+                    </>
+                  )}
+                </Button>
+              </div>
             )}
           </div>
         </div>
@@ -1571,9 +1999,17 @@ export function SalaryPayrollImportData({
         data={tableData}
         columns={ImportedDataColumns(activeFieldConfigs)}
         fieldConfigs={activeFieldConfigs}
+        conflictingIndex={conflictingIndices}
+        canUndo={undoStack.length > 0}
+        canRedo={redoStack.length > 0}
+        undoCount={undoStack.length}
+        redoCount={redoStack.length}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
         onCellChange={handleCellChange}
         onBulkChange={handleBulkChange}
         onDeleteColumn={(colKey) => setColToDelete(colKey)}
+        onRenameColumn={handleRenameColumn}
         onDeleteSelectedRows={(selectedIndices) => {
           setIndicesToDelete(selectedIndices);
           setIsBulkDeleteOpen(true);
@@ -1844,6 +2280,6 @@ export function SalaryPayrollImportData({
           </DialogContent>
         </Dialog>
       )}
-    </section>
+    </div>
   );
 }

@@ -1,4 +1,5 @@
 import { Checkbox } from "@canny_ecosystem/ui/checkbox";
+import { Icon } from "@canny_ecosystem/ui/icon";
 import { cn } from "@canny_ecosystem/ui/utils/cn";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -12,8 +13,9 @@ const getHighlightKey = (rowOriginal: any, fieldConfigs: FieldConfig[]) => {
   if (hasCode) return "employee_code";
 
   const hasUan =
-    fieldConfigs.some((f) => f.key === "uan_number") && rowOriginal?.uan_number;
-  if (hasUan) return "uan_number";
+    fieldConfigs.some((f) => f.key === "uan_no") &&
+    (rowOriginal?.uan_no || rowOriginal?.uan_number);
+  if (hasUan) return "uan_no";
 
   return "employee_name";
 };
@@ -23,29 +25,58 @@ export const ImportedDataColumns = (
 ): ColumnDef<any>[] => [
   {
     id: "select",
-    header: ({ table }) => (
-      <div className="flex items-center justify-center px-1">
-        <Checkbox
-          checked={
-            table.getIsAllPageRowsSelected() ||
-            (table.getIsSomePageRowsSelected() && "indeterminate")
-          }
-          onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
-          aria-label="Select all"
-          className="translate-y-[2px]"
-        />
-      </div>
-    ),
-    cell: ({ row }) => (
-      <div className="flex items-center justify-center px-1">
-        <Checkbox
-          checked={row.getIsSelected()}
-          onCheckedChange={(value) => row.toggleSelected(!!value)}
-          aria-label="Select row"
-          className="translate-y-[2px]"
-        />
-      </div>
-    ),
+    header: ({ table }) => {
+      const rows = table.getRowModel().rows;
+      const selectableRows = rows.filter(
+        (r) => !r.original?.has_error && !r.original?.is_disabled,
+      );
+      const allSelectableSelected =
+        selectableRows.length > 0 &&
+        selectableRows.every((r) => r.getIsSelected());
+      const someSelectableSelected = selectableRows.some((r) =>
+        r.getIsSelected(),
+      );
+
+      return (
+        <div className="flex items-center justify-center px-1">
+          <Checkbox
+            checked={
+              allSelectableSelected ||
+              (someSelectableSelected && !allSelectableSelected
+                ? "indeterminate"
+                : false)
+            }
+            onCheckedChange={(value) => {
+              for (const r of selectableRows) {
+                r.toggleSelected(!!value);
+              }
+            }}
+            aria-label="Select all"
+            className="translate-y-[2px]"
+          />
+        </div>
+      );
+    },
+    cell: ({ row }) => {
+      const isDisabled = Boolean(
+        row.original?.has_error || row.original?.is_disabled,
+      );
+
+      return (
+        <div className="flex items-center justify-center px-1">
+          <Checkbox
+            checked={row.getIsSelected()}
+            disabled={isDisabled}
+            onCheckedChange={(value) => row.toggleSelected(!!value)}
+            aria-label="Select row"
+            className={cn(
+              "translate-y-[2px]",
+              isDisabled && "opacity-40 cursor-not-allowed",
+            )}
+          />
+        </div>
+      );
+    },
     enableSorting: false,
     enableHiding: false,
   },
@@ -53,7 +84,30 @@ export const ImportedDataColumns = (
     accessorKey: "sr_no",
     header: "Sr No.",
     cell: ({ row }) => {
-      return <p className="truncate ">{row.index + 1}</p>;
+      const hasError = Boolean(
+        row.original?.has_error || row.original?.is_disabled,
+      );
+
+      return (
+        <div className="flex items-center gap-1.5 truncate">
+          <p className="truncate">{row.index + 1}</p>
+          {hasError && (
+            <span
+              title={
+                row.original?.error_message ||
+                "This row has an error and is disabled for mutations"
+              }
+              className="inline-flex shrink-0"
+            >
+              <Icon
+                name="exclaimation-triangle"
+                size="xs"
+                className="text-destructive"
+              />
+            </span>
+          )}
+        </div>
+      );
     },
   },
   ...fieldConfigs.map((field) => ({
