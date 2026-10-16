@@ -1,26 +1,27 @@
-import { cacheKeyPrefix, DEFAULT_ROUTE } from "@/constant";
+import { DEFAULT_ROUTE, cacheKeyPrefix } from "@/constant";
 import { clearCacheEntry } from "@/utils/cache";
 import { getCompanyIdOrFirstCompany } from "@/utils/server/company.server";
 import {
   createAttendanceByPayrollImportAndGiveID,
-  createSalaryPayroll,
-  createSalaryPayrollByDepartment,
   createPayrollFields,
   createSalaryFieldValues,
+  createSalaryPayroll,
+  createSalaryPayrollByDepartment,
 } from "@canny_ecosystem/supabase/mutations";
+import { recalculatePayrollTotals } from "@canny_ecosystem/supabase/mutations";
 import {
   getPayrollById,
   getPayrollFieldByPayrollId,
 } from "@canny_ecosystem/supabase/queries";
 import { getSupabaseWithHeaders } from "@canny_ecosystem/supabase/server";
-import { recalculatePayrollTotals } from "@canny_ecosystem/supabase/mutations";
 import type {
   EmployeeMonthlyAttendanceDatabaseInsert,
   EmployeeMonthlyAttendanceDatabaseUpdate,
+  PayrollFieldsDatabaseRow,
   SalaryEntriesDatabaseInsert,
   SalaryFieldValuesDatabaseInsert,
-  PayrollFieldsDatabaseRow,
 } from "@canny_ecosystem/supabase/types";
+import { Icon } from "@canny_ecosystem/ui/icon";
 import { useToast } from "@canny_ecosystem/ui/use-toast";
 import { calculateSalaryTotalNetAmount } from "@canny_ecosystem/utils";
 
@@ -28,7 +29,6 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { useActionData, useNavigate } from "@remix-run/react";
 import { useEffect } from "react";
-import { LoadingSpinner } from "@/components/loading-spinner";
 
 export async function action({
   request,
@@ -176,6 +176,7 @@ export async function action({
               successMessage ??
               message ??
               "Salary entries imported successfully",
+            payrollId,
             failedRedirect,
             error: null,
           });
@@ -183,7 +184,11 @@ export async function action({
 
         error = salaryError;
       } else {
-        const { error: salaryError, message } = await createSalaryPayroll({
+        const {
+          error: salaryError,
+          message,
+          data: createdPayroll,
+        } = await createSalaryPayroll({
           supabase,
           data: {
             title: payrollTitle,
@@ -210,6 +215,7 @@ export async function action({
               successMessage ??
               message ??
               "Salary entries imported successfully",
+            payrollId: (createdPayroll as any)?.id,
             failedRedirect,
             error: null,
           });
@@ -324,7 +330,9 @@ export async function action({
         const rowCreatedAt = new Date(baseTimestamp + i * 1000).toISOString();
         const { month, year, employee_id, ...rest } = entry;
 
-        const attendanceInsert: Record<string, any> = { created_at: rowCreatedAt };
+        const attendanceInsert: Record<string, any> = {
+          created_at: rowCreatedAt,
+        };
         for (const k of attendanceFields) {
           if (rest[k] !== undefined) attendanceInsert[k] = rest[k];
         }
@@ -343,7 +351,9 @@ export async function action({
           continue;
         }
 
-        const attendUpdate: EmployeeMonthlyAttendanceDatabaseUpdate = { created_at: rowCreatedAt };
+        const attendUpdate: EmployeeMonthlyAttendanceDatabaseUpdate = {
+          created_at: rowCreatedAt,
+        };
         for (const k of attendanceFields) {
           if (rest[k] !== undefined) (attendUpdate as any)[k] = rest[k];
         }
@@ -462,8 +472,33 @@ export default function CreatePayroll() {
   }, [actionData, navigate, toast]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-background/80">
-      <LoadingSpinner className="absolute top-1/2 -translate-y-1/2 m-0" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-md">
+      <div className="flex flex-col items-center justify-center space-y-4 p-8 bg-card/95 border rounded-2xl shadow-2xl max-w-sm text-center">
+        <div className="relative">
+          <div className="w-16 h-16 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <Icon
+              name="update"
+              size="md"
+              className="text-primary animate-spin"
+            />
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <h3 className="text-base font-bold text-foreground">
+            Processing Payroll Import
+          </h3>
+          <p className="text-xs text-muted-foreground font-medium">
+            Saving attendance records and generating salary entries...
+          </p>
+          <p className="text-[11px] text-muted-foreground/70">
+            Please wait while calculations are being finalized.
+          </p>
+        </div>
+        <div className="w-full bg-muted/60 rounded-full h-1.5 overflow-hidden">
+          <div className="bg-primary h-full rounded-full animate-pulse w-3/4" />
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,67 +1,61 @@
-import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { GEMINI_LITE, GEMINI_MAIN } from "@/utils/ai/chat/constant";
 import { google as googleAi } from "@ai-sdk/google";
 import { z } from "@canny_ecosystem/utils";
 import { generateObject } from "ai";
-import dotenv from "dotenv";
 import * as XLSX from "xlsx";
-
-const currentDir = path.dirname(fileURLToPath(import.meta.url));
-
 
 // -----------------------------------------------------------------------------
 // TYPES & RESULT INTERFACES
 // -----------------------------------------------------------------------------
 
-export interface SheetTransformationResult {
+export interface SheetTransformationDetails {
+  sheetName: string;
+  employeeNameCol: string | null;
+  employeeCodeCol: string | null;
+  esicCol: string | null;
+  uanCol: string | null;
+  attendance: string[];
+  earnings: string[];
+  grossCol: string | null;
+  deductions: string[];
+  netPayCol: string | null;
+  excludedRateColumns: string[];
+  removedColumns: Array<{ header: string; reason: string }>;
+}
+
+export interface SheetPayrollJsonResult {
   sheetName: string;
   totalRows: number;
-  lastRowText: string;
   recordsCount: number;
   columns: string[];
-  details: {
-    sheetName: string;
-    employeeNameCol: string | null;
-    employeeCodeCol: string | null;
-    esicCol: string | null;
-    uanCol: string | null;
-    attendance: string[];
-    earnings: string[];
-    grossCol: string | null;
-    deductions: string[];
-    netPayCol: string | null;
-    excludedRateColumns: string[];
-    removedColumns: Array<{ header: string; reason: string }>;
-  };
+  records: Array<Record<string, string | number>>;
+  details: SheetTransformationDetails;
+  totals: Record<string, number>;
+  lastRowText: string;
   previewRows?: (string | number)[][];
 }
 
-export interface ExcelTransformationResult {
-  transformedBuffer: Buffer;
-  transformedFilename: string;
-  totalRows: number;
-  lastRowText: string;
+export interface PayrollTransformJsonResult {
+  success: boolean;
+  filename: string;
+  totalRecords: number;
   recordsCount: number;
+  totalRows: number;
   columns: string[];
-  details: {
-    sheetName: string;
-    employeeNameCol: string | null;
-    employeeCodeCol: string | null;
-    esicCol: string | null;
-    uanCol: string | null;
-    attendance: string[];
-    earnings: string[];
-    grossCol: string | null;
-    deductions: string[];
-    netPayCol: string | null;
-    excludedRateColumns: string[];
-    removedColumns?: Array<{ header: string; reason: string }>;
-  };
+  records: Array<Record<string, string | number>>;
+  details: SheetTransformationDetails;
+  totals: Record<string, number>;
+  sheets: SheetPayrollJsonResult[];
+  lastRowText: string;
+  transformedBuffer?: Buffer;
+  transformedFilename?: string;
   previewRows?: (string | number)[][];
-  sheets: SheetTransformationResult[];
 }
+
+// Backward-compatibility aliases
+export type ExcelTransformationResult = PayrollTransformJsonResult;
+export type SheetTransformationResult = SheetPayrollJsonResult;
 
 // -----------------------------------------------------------------------------
 // STRICTLY ALLOWED CANONICAL COLUMNS
@@ -93,6 +87,11 @@ export const STANDARD_ALLOWED_COLUMNS = new Set<string>([
   "ph_wage",
   "ot_amount",
   "allowance",
+  "fixed_allowance",
+  "other_allowance",
+  "conveyance_allowance",
+  "transportation_allowance",
+  "el_amount",
   "leave_salary",
   "bonus",
   "gross",
@@ -161,7 +160,7 @@ const SheetStructureSchema = z.object({
         cleanHeader: z
           .string()
           .describe(
-            "Standardized snake_case column name matching allowed payroll schema: employee_name, employee_code, uan_no, esic_no, working_days, present_days, ph, pl, cl, ml, el, ot_hours, ot_days, basic, da, hra, lta, ph_wage, ot_amount, allowance, leave_salary, bonus, gross, pf, esic, pt, lwf, deduction, advance, expense, net_pay, or other payment field involved in gross/net_pay calculation.",
+            "Standardized snake_case column name matching allowed payroll schema: employee_name, employee_code, uan_no, esic_no, working_days, present_days, ph, pl, cl, ml, el, ot_hours, ot_days, basic, da, hra, lta, ph_wage, ot_amount, allowance, fixed_allowance, other_allowance, conveyance_allowance, transportation_allowance, el_amount, leave_salary, bonus, gross, pf, esic, pt, lwf, deduction, advance, expense, net_pay, or other payment field involved in gross/net_pay calculation. STRICTLY FORBIDDEN SYNONYMS: NEVER use uan_number (use uan_no), never use esic_number (use esic_no), never use deductions/total_deduction/total_deductions (use deduction).",
           ),
         category: z
           .enum([
@@ -221,7 +220,11 @@ CRITICAL RULES & ALLOWED COLUMNS:
 
 2. STRICTLY ALLOWED COLUMNS:
    You may ONLY map kept columns to the following allowed names:
-   - Identity: employee_name (required), employee_code (can be name or number, min 2 chars), uan_no (required, can be name or number, min 2 chars), esic_no (can be name or number, min 2 chars)
+   - Identity:
+     * employee_name (required)
+     * employee_code (can be name or number, min 2 chars)
+     * uan_no (required, can be name or number, min 2 chars) - STRICT: NEVER use 'uan_number' or 'uan'. ALWAYS map to 'uan_no'.
+     * esic_no (can be name or number, min 2 chars) - STRICT: NEVER use 'esic_number', 'esi_no', or 'esi_number'. ALWAYS map to 'esic_no'.
    - Attendance:
      * working_days
      * present_days (required)
@@ -234,9 +237,22 @@ CRITICAL RULES & ALLOWED COLUMNS:
      * If two attendance columns of same/similar name exist (excluding leaves ph/cl/etc. and ot), the 1st is working_days, the 2nd is present_days.
      * If only ONE general attendance column exists, it will always be present_days.
    - Earnings:
-     * basic (required), da, hra, lta, ph_wage, ot_amount, allowance, leave_salary, bonus, gross
+     * basic (required), da, hra, lta, ph_wage, ot_amount, allowance, fixed_allowance, other_allowance, conveyance_allowance, transportation_allowance, el_amount, leave_salary, bonus, gross
+   - Allowance Matching Rules:
+     * Specific Allowance Names:
+       - Conveyance / Conv / Travel -> conveyance_allowance
+       - Transport / Transportation -> transportation_allowance
+       - Fixed allowance -> fixed_allowance
+       - Other allowance -> other_allowance
+     * Single Allowance Rule:
+       - If there is only one allowance column in the spreadsheet of any name, match by specific name first (conveyance, transportation, fixed, other); if it doesn't match those specific names (e.g. 'Allowance', 'Special Allowance', 'Spl All', 'Site Allowance'), map it to allowance.
+     * Multiple Allowance Rule:
+       - Match specific names first; any generic/unmatched allowances map to allowance, then other_allowance.
+   - Earned Leave (EL) Payment:
+     * EL wages / encashment / EL amount columns (money amounts, not attendance days) map to el_amount (earning).
    - Deductions:
      * pf, esic, pt, lwf, deduction
+     * STRICT DEDUCTION RULE: NEVER use synonyms like 'deductions', 'total_deduction', 'total_deductions', or 'total_ded'. Map ANY total deduction or deduction summary column STRICTLY to 'deduction'. Only 'deduction' is allowed.
    - Special:
      * advance, expense (figure out whether earning or deduction based on calculation involvement in gross / net_pay: subtracted in net_pay -> deduction; added -> earning)
    - Payment:
@@ -836,10 +852,20 @@ export function getCanonicalHeaderPriority(
       return 80;
     case "allowance":
       return 82;
-    case "leave_salary":
+    case "fixed_allowance":
+      return 83;
+    case "other_allowance":
       return 84;
-    case "bonus":
+    case "conveyance_allowance":
+      return 85;
+    case "transportation_allowance":
       return 86;
+    case "el_amount":
+      return 87;
+    case "leave_salary":
+      return 88;
+    case "bonus":
+      return 89;
     case "gross":
       return 95;
     // Deductions
@@ -852,7 +878,6 @@ export function getCanonicalHeaderPriority(
     case "lwf":
       return 106;
     case "deduction":
-    case "deductions":
       return 108;
     // Payment
     case "net_pay":
@@ -1048,6 +1073,232 @@ function resolveAdvanceAndExpenseCategories(
   });
 }
 
+function classifyAllowanceName(
+  header: string,
+  rawHeaders: string[],
+):
+  | "conveyance_allowance"
+  | "transportation_allowance"
+  | "fixed_allowance"
+  | "other_allowance"
+  | "generic" {
+  const combined = `${header} ${rawHeaders.join(" ")}`.toLowerCase();
+
+  // Conveyance
+  if (/conveyance|\bconv\b|convey|travelling|travel\s*all/i.test(combined)) {
+    return "conveyance_allowance";
+  }
+
+  // Transportation
+  if (/transportation|\btransport\b|\btransp\b/i.test(combined)) {
+    return "transportation_allowance";
+  }
+
+  // Fixed
+  if (/\bfixed\b/i.test(combined)) {
+    return "fixed_allowance";
+  }
+
+  // Other
+  if (/\bother\b|\both\b/i.test(combined)) {
+    return "other_allowance";
+  }
+
+  return "generic";
+}
+
+function isAllowanceCandidate(header: string, rawHeaders: string[]): boolean {
+  if (["da", "hra", "lta"].includes(header)) return false;
+  const rawStr = rawHeaders.join(" ").toLowerCase();
+  if (/\bhra\b|house\s*rent/i.test(rawStr)) return false;
+  if (/\bda\b|dearness/i.test(rawStr)) return false;
+  if (/\blta\b|leave\s*travel/i.test(rawStr)) return false;
+
+  const ALLOWANCE_CANONICALS = new Set([
+    "allowance",
+    "fixed_allowance",
+    "other_allowance",
+    "conveyance_allowance",
+    "transportation_allowance",
+  ]);
+  if (ALLOWANCE_CANONICALS.has(header)) return true;
+  if (header.includes("allowance") || header.includes("allw")) return true;
+
+  if (
+    /\ballowance\b|\ballw\b|\balln\b|\bconveyance\b|\bconv\b|\btransportation\b|\btransport\b/i.test(
+      rawStr,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function resolveAllowanceColumns(
+  cols: KeptColumnDef[],
+  factSummary: FactSummary,
+): KeptColumnDef[] {
+  const allowanceCandidates: Array<{
+    col: KeptColumnDef;
+    classified:
+      | "conveyance_allowance"
+      | "transportation_allowance"
+      | "fixed_allowance"
+      | "other_allowance"
+      | "generic";
+  }> = [];
+
+  const nonAllowanceCols: KeptColumnDef[] = [];
+
+  for (const c of cols) {
+    const rawHeaders =
+      c.colIndex >= 0 && factSummary.columns[c.colIndex]
+        ? factSummary.columns[c.colIndex].headers
+        : [];
+    if (isAllowanceCandidate(c.header, rawHeaders)) {
+      allowanceCandidates.push({
+        col: c,
+        classified: classifyAllowanceName(c.header, rawHeaders),
+      });
+    } else {
+      nonAllowanceCols.push(c);
+    }
+  }
+
+  if (allowanceCandidates.length === 0) {
+    return cols;
+  }
+
+  const resolvedAllowances: KeptColumnDef[] = [];
+
+  // If there's only one allowance of any name:
+  // "if there's only one allowance of any name, then match by name, if you can't match it with names but it is allowance onlly then add it to allowance"
+  if (allowanceCandidates.length === 1) {
+    const single = allowanceCandidates[0];
+    const finalHeader =
+      single.classified !== "generic" ? single.classified : "allowance";
+    resolvedAllowances.push({
+      ...single.col,
+      header: finalHeader,
+      category: "earning",
+    });
+  } else {
+    // Multiple allowance columns:
+    // Sort candidates by colIndex
+    allowanceCandidates.sort((a, b) => a.col.colIndex - b.col.colIndex);
+
+    const assignedNames = new Set<string>();
+    const unassigned: typeof allowanceCandidates = [];
+
+    // Pass 1: Match specific named allowances first (conveyance, transportation, fixed, other)
+    for (const cand of allowanceCandidates) {
+      if (
+        cand.classified !== "generic" &&
+        !assignedNames.has(cand.classified)
+      ) {
+        assignedNames.add(cand.classified);
+        resolvedAllowances.push({
+          ...cand.col,
+          header: cand.classified,
+          category: "earning",
+        });
+      } else {
+        unassigned.push(cand);
+      }
+    }
+
+    // Pass 2: Remaining generic allowances: fallback pool in priority order
+    const fallbackPool = [
+      "allowance",
+      "other_allowance",
+      "fixed_allowance",
+      "conveyance_allowance",
+      "transportation_allowance",
+    ];
+
+    for (const cand of unassigned) {
+      const nextAvailable = fallbackPool.find((n) => !assignedNames.has(n));
+      if (nextAvailable) {
+        assignedNames.add(nextAvailable);
+        resolvedAllowances.push({
+          ...cand.col,
+          header: nextAvailable,
+          category: "earning",
+        });
+      } else {
+        resolvedAllowances.push({
+          ...cand.col,
+          header: cand.col.header || "allowance",
+          category: "earning",
+        });
+      }
+    }
+  }
+
+  const result = [...nonAllowanceCols, ...resolvedAllowances];
+  result.sort((a, b) => a.colIndex - b.colIndex);
+  return result;
+}
+
+function resolveEarnedLeaveColumns(
+  cols: KeptColumnDef[],
+  sheet: XLSX.WorkSheet,
+  factSummary: FactSummary,
+): KeptColumnDef[] {
+  return cols.map((col) => {
+    if (col.header === "el_amount") {
+      return { ...col, category: "earning" };
+    }
+
+    const colFact =
+      col.colIndex >= 0 ? factSummary.columns[col.colIndex] : null;
+    const rawHeadersStr = colFact
+      ? colFact.headers.join(" ").toLowerCase()
+      : "";
+
+    const isElCandidate =
+      col.header === "el" ||
+      /\b(el|earned\s*leave)\b/i.test(col.header) ||
+      /\b(el|earned\s*leave)\b/i.test(rawHeadersStr);
+
+    if (isElCandidate) {
+      const hasAmountKeyword =
+        /\b(amount|amt|wage|wages|pay|encash|encashment|rate|rs|rupee|payout)\b/i.test(
+          rawHeadersStr,
+        ) ||
+        /\b(amount|amt|wage|wages|pay|encash|encashment)\b/i.test(col.header);
+
+      const hasValuesOver31 =
+        colFact?.maxNum !== null && (colFact?.maxNum ?? 0) > 31;
+
+      let hasMoneyFormula = false;
+      if (sheet && col.colIndex >= 0) {
+        const colLetter = XLSX.utils.encode_col(col.colIndex);
+        for (let r = 1; r <= 30; r++) {
+          const cell = sheet[colLetter + r];
+          if (cell?.f) {
+            const fStr = String(cell.f).toLowerCase();
+            if (/\*|\/26|\/30/.test(fStr)) {
+              hasMoneyFormula = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (hasAmountKeyword || hasValuesOver31 || hasMoneyFormula) {
+        return {
+          ...col,
+          header: "el_amount",
+          category: "earning",
+        };
+      }
+    }
+
+    return col;
+  });
+}
+
 function isPaymentComponentInFormula(
   colIndex: number,
   sheet: XLSX.WorkSheet,
@@ -1103,11 +1354,23 @@ function isPaymentComponentInFormula(
 // MAIN TRANSFORMATION PIPELINE
 // -----------------------------------------------------------------------------
 
-export async function transformPayrollExcelAttachment(
-  content: Buffer | Uint8Array,
-  filename: string,
-): Promise<ExcelTransformationResult> {
-  
+export async function transformPayrollExcelToJson(
+  contentOrOptions:
+    | Buffer
+    | Uint8Array
+    | { buffer: Buffer | Uint8Array; filename?: string },
+  maybeFilename?: string,
+): Promise<PayrollTransformJsonResult> {
+  const content =
+    Buffer.isBuffer(contentOrOptions) || contentOrOptions instanceof Uint8Array
+      ? contentOrOptions
+      : (contentOrOptions as any)?.buffer;
+  const filename =
+    maybeFilename ||
+    (typeof contentOrOptions === "object" && "filename" in contentOrOptions
+      ? (contentOrOptions as any).filename
+      : "payroll.xlsx") ||
+    "payroll.xlsx";
 
   let workbook: XLSX.WorkBook;
   try {
@@ -1130,7 +1393,6 @@ export async function transformPayrollExcelAttachment(
 
   const newWorkbook = XLSX.utils.book_new();
   let firstSheetResult: ExcelTransformationResult | null = null;
-  let totalTransformedRecordsAllSheets = 0;
   const allSheetResults: SheetTransformationResult[] = [];
 
   for (const sheetName of sheetNames) {
@@ -1179,11 +1441,11 @@ ${factSummary.formulaInsightLines.join("\n") || "- No formulas found"}
 Please analyze all rows and columns above:
 1. Identify headerRowIndex and secondaryHeaderRowIndex (if present).
 2. Determine dataStartRowIndex where the FIRST ACTUAL HUMAN EMPLOYEE record begins.
-3. Select columnsToKeep strictly matching allowed canonical payroll columns:
-   - Identity: employee_name (required), employee_code (can be name or number, min 2 chars), uan_no (required, can be name or number, min 2 chars), esic_no (can be name or number, min 2 chars).
+3. Select columnsToKeep strictly matching allowed canonical payroll columns (NO SYNONYMS):
+   - Identity: employee_name (required), employee_code (can be name or number, min 2 chars), uan_no (required, min 2 chars - NEVER use uan_number), esic_no (min 2 chars - NEVER use esic_number).
    - Attendance: working_days, present_days (required), ph, pl, cl, ml, el, ot_hours OR ot_days (only one! Required if ot_amount is present).
-   - Earnings: basic (required), da, hra, lta, ph_wage, ot_amount, allowance, leave_salary, bonus, gross.
-   - Deductions: pf, esic, pt, lwf, deduction.
+   - Earnings: basic (required), da, hra, lta, ph_wage, ot_amount, allowance, fixed_allowance, other_allowance, conveyance_allowance, transportation_allowance, el_amount, leave_salary, bonus, gross.
+   - Deductions: pf, esic, pt, lwf, deduction (NEVER use deductions or total_deduction, keep ONLY deduction).
    - Special: advance, expense.
    - Payment: net_pay.
 4. Select columnsToRemove:
@@ -1220,15 +1482,44 @@ Please analyze all rows and columns above:
     }
 
     if (!analysisSuccess) {
-      if (sheetNames.length === 1) {
-        throw new Error(
-          `AI analysis failed for "${sheetName}": ${lastErr?.message || String(lastErr)}`,
-        );
+      const isQuota = /quota|rate[- ]limit|resource_exhausted|retry in/i.test(
+        lastErr?.message || "",
+      );
+      if (isQuota || sheetNames.length === 1) {
+        let msg = lastErr?.message || String(lastErr);
+        const retryMatch = msg.match(/retry (?:in|after) ([0-9.]+)\s*s?/i);
+        if (retryMatch?.[1]) {
+          const ceilSecs = Math.ceil(Number.parseFloat(retryMatch[1]));
+          msg = msg.replace(
+            /retry (?:in|after) [0-9.]+\s*s?/i,
+            `retry in ${ceilSecs}s`,
+          );
+        }
+        throw new Error(`AI analysis failed for "${sheetName}": ${msg}`);
       }
       continue;
     }
 
     const ai = aiResult!;
+
+    // Helper to normalize any stray synonyms deterministically to canonical names
+    const normalizeCanonicalHeader = (header: string): string => {
+      const h = header.trim().toLowerCase();
+      if (h === "uan_number" || h === "uan") return "uan_no";
+      if (h === "esic_number" || h === "esi_no" || h === "esi_number")
+        return "esic_no";
+      if (
+        h === "deductions" ||
+        h === "total_deduction" ||
+        h === "total_deductions" ||
+        h === "total_ded" ||
+        h === "tot_ded" ||
+        h === "tot_deduction"
+      ) {
+        return "deduction";
+      }
+      return h;
+    };
 
     // Step 3: Determine target columns to keep
     const initialKeptCols: Array<{
@@ -1237,12 +1528,21 @@ Please analyze all rows and columns above:
       category: string;
     }> = [];
 
+    const seenCanonicalKeys = new Set<string>();
     for (const col of ai.columnsToKeep) {
       if (typeof col.colIndex === "number" && col.colIndex >= 0) {
+        const clean = normalizeCanonicalHeader(col.cleanHeader);
+        // Avoid duplicate mappings for single canonical keys
+        if (
+          ["uan_no", "esic_no", "deduction", "gross", "net_pay"].includes(clean)
+        ) {
+          if (seenCanonicalKeys.has(clean)) continue;
+          seenCanonicalKeys.add(clean);
+        }
         initialKeptCols.push({
           colIndex: col.colIndex,
-          cleanHeader: col.cleanHeader,
-          category: col.category,
+          cleanHeader: clean,
+          category: clean === "deduction" ? "deduction" : col.category,
         });
       }
     }
@@ -1290,10 +1590,23 @@ Please analyze all rows and columns above:
       netPayColIdx,
     );
 
-    // D. Strictly Filter Allowed Columns:
+    // D. Resolve Allowance Columns (single vs multiple, specific match vs generic)
+    const resolvedAllowanceCols = resolveAllowanceColumns(
+      resolvedAdvanceExpenseCols,
+      factSummary,
+    );
+
+    // E. Resolve Earned Leave Columns (attendance el vs monetary el_amount)
+    const resolvedElCols = resolveEarnedLeaveColumns(
+      resolvedAllowanceCols,
+      sheet,
+      factSummary,
+    );
+
+    // F. Strictly Filter Allowed Columns:
     // Only allow columns in STANDARD_ALLOWED_COLUMNS or custom payment fields in gross/net_pay calculation
     const strictlyAllowedKeptCols: KeptColumnDef[] = [];
-    for (const col of resolvedAdvanceExpenseCols) {
+    for (const col of resolvedElCols) {
       if (STANDARD_ALLOWED_COLUMNS.has(col.header)) {
         strictlyAllowedKeptCols.push(col);
       } else {
@@ -1443,23 +1756,23 @@ Please analyze all rows and columns above:
 
         if (col.header === "working_days") {
           if (col.isSynthesized) {
-            return (
-              col.synthesizedDivisor ??
-              (presentDaysVal ? Math.max(26, presentDaysVal) : 26)
-            );
+            const baseWd = col.synthesizedDivisor ?? 26;
+            return typeof presentDaysVal === "number"
+              ? Math.max(baseWd, presentDaysVal)
+              : baseWd;
           }
           const rawCell = col.colIndex >= 0 ? row[col.colIndex] : "";
           let wd = cleanAttendanceDaysValue(rawCell);
           if (
             typeof wd === "number" &&
-            presentDaysVal !== null &&
+            typeof presentDaysVal === "number" &&
             presentDaysVal > wd
           ) {
             wd = presentDaysVal;
           }
           return wd !== ""
             ? wd
-            : presentDaysVal
+            : typeof presentDaysVal === "number"
               ? Math.max(26, presentDaysVal)
               : 26;
         }
@@ -1596,8 +1909,6 @@ Please analyze all rows and columns above:
     }
     XLSX.utils.book_append_sheet(newWorkbook, worksheet, finalSafeSheetName);
 
-    totalTransformedRecordsAllSheets += finalDataRows.length;
-
     const lastRow = finalDataRows[finalDataRows.length - 1];
     const lastRowText = lastRow
       .map((c) => String(c ?? "").trim())
@@ -1637,6 +1948,11 @@ Please analyze all rows and columns above:
             "ph_wage",
             "ot_amount",
             "allowance",
+            "fixed_allowance",
+            "other_allowance",
+            "conveyance_allowance",
+            "transportation_allowance",
+            "el_amount",
             "leave_salary",
             "bonus",
           ].includes(h) ||
@@ -1666,32 +1982,81 @@ Please analyze all rows and columns above:
       })),
     };
 
+    // Convert final data rows into JSON employee records
+    const sheetRecords: Array<Record<string, string | number>> =
+      finalDataRows.map((row) => {
+        const record: Record<string, string | number> = {
+          sheet_name: sheetName,
+        };
+        for (let c = 0; c < finalHeaders.length; c++) {
+          const key = finalHeaders[c];
+          const val = row[c];
+          record[key] = val !== null && val !== undefined ? val : "";
+        }
+        if (record.uan_no && !record.uan_number) {
+          record.uan_number = record.uan_no;
+        }
+        if (record.esic_no && !record.esic_number) {
+          record.esic_number = record.esic_no;
+        }
+        return record;
+      });
+
+    // Compute totals object for amount fields
+    const sheetTotals: Record<string, number> = {};
+    for (let c = 0; c < finalHeaders.length; c++) {
+      const key = finalHeaders[c];
+      const val = totalRow[c];
+      if (typeof val === "number") {
+        sheetTotals[key] = val;
+      }
+    }
+
     allSheetResults.push({
       sheetName,
-      totalRows: worksheetData.length,
-      lastRowText: lastRowText || "Empty row",
+      totalRows: finalDataRows.length,
       recordsCount: finalDataRows.length,
       columns: finalHeaders,
+      records: sheetRecords,
       details: currentSheetDetails,
+      totals: sheetTotals,
+      lastRowText: lastRowText || "Empty row",
       previewRows: worksheetData,
     });
 
     if (!firstSheetResult) {
       firstSheetResult = {
+        success: true,
+        filename,
+        totalRecords: finalDataRows.length,
+        recordsCount: finalDataRows.length,
+        totalRows: finalDataRows.length,
+        columns: finalHeaders,
+        records: sheetRecords,
+        details: currentSheetDetails,
+        totals: sheetTotals,
+        sheets: [],
+        lastRowText: lastRowText || "Empty row",
+        previewRows: worksheetData,
         transformedBuffer: Buffer.from([]),
         transformedFilename: "",
-        totalRows: worksheetData.length,
-        lastRowText: lastRowText || "Empty row",
-        recordsCount: finalDataRows.length,
-        columns: finalHeaders,
-        details: currentSheetDetails,
-        previewRows: worksheetData,
-        sheets: [],
       };
     }
   }
 
   if (newWorkbook.SheetNames.length === 0 || !firstSheetResult) {
+    if (lastErr) {
+      let msg = lastErr?.message || String(lastErr);
+      const retryMatch = msg.match(/retry (?:in|after) ([0-9.]+)\s*s?/i);
+      if (retryMatch?.[1]) {
+        const ceilSecs = Math.ceil(Number.parseFloat(retryMatch[1]));
+        msg = msg.replace(
+          /retry (?:in|after) [0-9.]+\s*s?/i,
+          `retry in ${ceilSecs}s`,
+        );
+      }
+      throw new Error(`AI analysis failed: ${msg}`);
+    }
     throw new Error(
       `No valid employee payroll data could be extracted from "${filename}".`,
     );
@@ -1706,10 +2071,22 @@ Please analyze all rows and columns above:
   const baseName = parsed.name || "payroll";
   const transformedFilename = `Transformed_${baseName}.xlsx`;
 
+  const allRecords = allSheetResults.flatMap((s) => s.records);
+  const uniqueCols = new Set<string>();
+  for (const s of allSheetResults) {
+    for (const c of s.columns) uniqueCols.add(c);
+  }
+
   firstSheetResult.transformedBuffer = transformedBuffer;
   firstSheetResult.transformedFilename = transformedFilename;
-  firstSheetResult.recordsCount = totalTransformedRecordsAllSheets;
+  firstSheetResult.records = allRecords;
+  firstSheetResult.recordsCount = allRecords.length;
+  firstSheetResult.totalRecords = allRecords.length;
+  firstSheetResult.columns = Array.from(uniqueCols);
   firstSheetResult.sheets = allSheetResults;
 
   return firstSheetResult;
 }
+
+export const transformPayrollExcel = transformPayrollExcelToJson;
+export const transformPayrollExcelAttachment = transformPayrollExcelToJson;

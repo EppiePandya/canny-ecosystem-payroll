@@ -1,5 +1,5 @@
 import { FooterTabs } from "@/components/footer-tabs";
-import { cacheKeyPrefix, DEFAULT_ROUTE } from "@/constant";
+import { DEFAULT_ROUTE, cacheKeyPrefix } from "@/constant";
 import { clientCaching } from "@/utils/cache";
 import { safeRedirect } from "@/utils/server/http.server";
 import { getUserCookieOrFetchUser } from "@/utils/server/user.server";
@@ -10,10 +10,10 @@ import { hasPermission, readRole } from "@canny_ecosystem/utils";
 import { attribute } from "@canny_ecosystem/utils/constant";
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import {
+  type ClientLoaderFunctionArgs,
+  Link,
   Outlet,
   useLocation,
-  Link,
-  type ClientLoaderFunctionArgs,
 } from "@remix-run/react";
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -37,7 +37,7 @@ export default function Payroll() {
   const { role } = useUser();
   return (
     <section className="flex flex-col h-full w-full">
-      <div className="flex items-center gap-4 md:py-2.5 px-4 md:border-b">
+      <div className="flex items-center gap-4 md:py-2.5 px-4 md:border-b shrink-0">
         <div className="hidden md:flex md:items-center md:gap-4 w-full">
           <SecondaryMenu
             items={[
