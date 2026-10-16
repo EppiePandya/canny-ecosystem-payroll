@@ -138,6 +138,132 @@ const getInsertIndexForNewColumn = (
   return configs.length;
 };
 
+const mergeTwoRecords = (
+  primary: any,
+  dup: any,
+  fieldConfigs: FieldConfig[],
+): any => {
+  const merged = { ...primary };
+
+  // 1. Working Days: keep max
+  const primaryWorkingDays = Number(primary.working_days);
+  const dupWorkingDays = Number(dup.working_days);
+  if (!Number.isNaN(primaryWorkingDays) && !Number.isNaN(dupWorkingDays)) {
+    merged.working_days = Math.max(primaryWorkingDays, dupWorkingDays);
+  } else if (!Number.isNaN(dupWorkingDays)) {
+    merged.working_days = dupWorkingDays;
+  }
+
+  // 2. Attendance fields: numeric sum
+  const attendanceKeys = [
+    "present_days",
+    "ph",
+    "pl",
+    "cl",
+    "ml",
+    "el",
+    "ot_hours",
+    "ot_days",
+    "weekly_off",
+    "absent_days",
+    "holiday",
+    "paid_days",
+  ];
+
+  for (const attKey of attendanceKeys) {
+    if (attKey in primary || attKey in dup) {
+      const v1 = Number(primary[attKey]) || 0;
+      const v2 = Number(dup[attKey]) || 0;
+      if (v1 !== 0 || v2 !== 0 || attKey in primary || attKey in dup) {
+        merged[attKey] = v1 + v2;
+      }
+    }
+  }
+
+  // 3. Financial / Payment columns configured in fieldConfigs
+  const handledConfigKeys = new Set<string>();
+
+  for (const config of fieldConfigs) {
+    const key = config.key;
+    handledConfigKeys.add(key);
+
+    if (config.type === "earning" || config.type === "deduction") {
+      const a1 = getRecordAmount(primary[key]);
+      const a2 = getRecordAmount(dup[key]);
+      const combinedAmount = Math.round(a1 + a2);
+      const existingVal = primary[key] ?? dup[key];
+
+      merged[key] = setRecordAmount(existingVal, combinedAmount, config.type);
+    }
+  }
+
+  // 4. Any other unconfigured keys on dup that are payment amounts or numeric values
+  const allOtherKeys = new Set([...Object.keys(primary), ...Object.keys(dup)]);
+  for (const key of allOtherKeys) {
+    if (handledConfigKeys.has(key)) continue;
+    if (
+      key === "working_days" ||
+      attendanceKeys.includes(key) ||
+      key === "employee_name" ||
+      key === "employee_code" ||
+      key === "uan_no" ||
+      key === "uan_number" ||
+      key === "esic_no" ||
+      key === "esic_number" ||
+      key === "sr_no" ||
+      key === "is_duplicate" ||
+      key === "primary_index" ||
+      key === "primary_sr_no" ||
+      key === "_sheetRowIndex" ||
+      key === "is_site_header" ||
+      key === "is_new_employee" ||
+      key === "employee_id" ||
+      key === "has_existing_salary_entry" ||
+      key === "raw_row"
+    ) {
+      continue;
+    }
+
+    const val1 = primary[key];
+    const val2 = dup[key];
+
+    const isAmountObj =
+      (val1 && typeof val1 === "object" && "amount" in val1) ||
+      (val2 && typeof val2 === "object" && "amount" in val2);
+
+    if (isAmountObj) {
+      const a1 = getRecordAmount(val1);
+      const a2 = getRecordAmount(val2);
+      const type = val1?.type || val2?.type || "earning";
+      merged[key] = setRecordAmount(val1 ?? val2, Math.round(a1 + a2), type);
+    } else if (typeof val1 === "number" || typeof val2 === "number") {
+      const n1 = typeof val1 === "number" ? val1 : Number(val1) || 0;
+      const n2 = typeof val2 === "number" ? val2 : Number(val2) || 0;
+      merged[key] = n1 + n2;
+    } else if (!merged[key] && val2) {
+      merged[key] = val2;
+    }
+  }
+
+  // 5. Ensure net_pay is assigned if missing
+  if (
+    "net_pay" in merged &&
+    getRecordAmount(merged.net_pay) === 0 &&
+    "gross" in merged &&
+    "deduction" in merged
+  ) {
+    const g = getRecordAmount(merged.gross);
+    const d = getRecordAmount(merged.deduction);
+    merged.net_pay = setRecordAmount(
+      merged.net_pay,
+      Math.max(0, g - d),
+      "earning",
+    );
+  }
+
+  return merged;
+};
+
 export function SalaryPayrollImportData({
   env,
   fieldConfigs: propFieldConfigs,
@@ -485,6 +611,52 @@ export function SalaryPayrollImportData({
     [allSites, isSiteMatch],
   );
 
+  // Duplicate employee detection within the active sheet:
+  // Matches when employee_name, employee_code, uan_no (or uan_number), and esic_no (or esic_number)
+  // are all identical together.
+  const duplicatesInfo = useMemo(() => {
+    const seenMap = new Map<string, number>();
+    const duplicateMap = new Map<number, number>();
+    const duplicatesList: Array<{ dupIndex: number; primaryIndex: number }> =
+      [];
+
+    activeRecords.forEach((rec: any, idx: number) => {
+      if (!rec || rec.is_site_header) return;
+
+      const rawName = rec.employee_name ?? "";
+      const rawCode = rec.employee_code ?? "";
+      const rawUan = rec.uan_no ?? rec.uan_number ?? "";
+      const rawEsic = rec.esic_no ?? rec.esic_number ?? "";
+
+      const normName = String(rawName)
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+      const normCode = String(rawCode).trim().toLowerCase();
+      const normUan = String(rawUan).trim().toLowerCase();
+      const normEsic = String(rawEsic).trim().toLowerCase();
+
+      // If both name and code are completely empty, skip (e.g. spacer rows)
+      if (!normName && !normCode) return;
+
+      const key = `${normName}__${normCode}__${normUan}__${normEsic}`;
+
+      if (seenMap.has(key)) {
+        const primaryIdx = seenMap.get(key)!;
+        duplicateMap.set(idx, primaryIdx);
+        duplicatesList.push({ dupIndex: idx, primaryIndex: primaryIdx });
+      } else {
+        seenMap.set(key, idx);
+      }
+    });
+
+    return {
+      duplicateMap,
+      duplicatesList,
+      duplicateIndices: new Set(duplicateMap.keys()),
+    };
+  }, [activeRecords]);
+
   // Derive enrichedData for activeSheet.records
   const enrichedData = useMemo(() => {
     const normalize = (val: any) =>
@@ -495,7 +667,7 @@ export function SalaryPayrollImportData({
 
     let currentSiteName: string | null = null;
 
-    return activeRecords.map((item: any) => {
+    return activeRecords.map((item: any, originalIndex: number) => {
       const rawName = (item as any).employee_name || "";
       const normalizedRawName = normalizeSiteName(rawName);
 
@@ -556,6 +728,7 @@ export function SalaryPayrollImportData({
           is_missing_matching_key: false,
           employee_id: null,
           has_existing_salary_entry: false,
+          _sheetRowIndex: originalIndex,
         };
       }
 
@@ -752,6 +925,15 @@ export function SalaryPayrollImportData({
         is_new_employee: !finalMatchedData,
         employee_id: employeeId,
         has_existing_salary_entry: hasExistingSalaryEntry,
+        _sheetRowIndex: originalIndex,
+        is_duplicate: duplicatesInfo.duplicateMap.has(originalIndex),
+        primary_index: duplicatesInfo.duplicateMap.get(originalIndex),
+        primary_sr_no: (() => {
+          const pIdx = duplicatesInfo.duplicateMap.get(originalIndex);
+          if (pIdx === undefined) return undefined;
+          const pRec = activeRecords[pIdx];
+          return pRec?.sr_no ? Number(pRec.sr_no) : pIdx + 1;
+        })(),
       };
     });
   }, [
@@ -759,6 +941,7 @@ export function SalaryPayrollImportData({
     allEmps,
     allSites,
     activeSheet?.sheetName,
+    duplicatesInfo,
     existingEmployeeIds,
     getEmployeeSiteNames,
     getNormalizedWords,
@@ -789,7 +972,10 @@ export function SalaryPayrollImportData({
 
   const unmatchedEmployees = useMemo(() => {
     const unmatched = enrichedData
-      .filter((item) => item.is_new_employee && !item.is_site_header)
+      .filter(
+        (item) =>
+          item.is_new_employee && !item.is_site_header && !item.is_duplicate,
+      )
       .reduce((acc: any[], current) => {
         const hasMatch = acc.some((item) => {
           if (
@@ -1438,6 +1624,154 @@ export function SalaryPayrollImportData({
       }));
   }, [activeFieldConfigs]);
 
+  // Handler for merging a single duplicate row into its primary row
+  const handleMergeDuplicate = useCallback(
+    (dupSheetIdx: number) => {
+      const primaryIdx = duplicatesInfo.duplicateMap.get(dupSheetIdx);
+      if (primaryIdx === undefined) return;
+
+      const primaryRecord = activeRecords[primaryIdx];
+      const dupRecord = activeRecords[dupSheetIdx];
+      if (!primaryRecord || !dupRecord) return;
+
+      const primaryPresent = Number(primaryRecord.present_days) || 0;
+      const dupPresent = Number(dupRecord.present_days) || 0;
+      const totalPresent = primaryPresent + dupPresent;
+
+      if (totalPresent > 31) {
+        toast({
+          title: "Cannot Merge Rows",
+          description: `Cannot merge rows for "${primaryRecord.employee_name || "Employee"}": combined present days (${totalPresent}) would exceed the maximum limit of 31 days.`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      pushToHistory(sheetsData);
+
+      setSheetsData((prevSheets) => {
+        const updated = [...prevSheets];
+        const sheet = { ...updated[activeSheetIndex] };
+        const records = [...sheet.records];
+
+        if (!records[primaryIdx] || !records[dupSheetIdx]) return prevSheets;
+
+        records[primaryIdx] = mergeTwoRecords(
+          records[primaryIdx],
+          records[dupSheetIdx],
+          activeFieldConfigs,
+        );
+        records.splice(dupSheetIdx, 1);
+
+        sheet.records = records;
+        updated[activeSheetIndex] = sheet;
+        return updated;
+      });
+    },
+    [
+      duplicatesInfo.duplicateMap,
+      activeRecords,
+      pushToHistory,
+      sheetsData,
+      activeSheetIndex,
+      activeFieldConfigs,
+      toast,
+    ],
+  );
+
+  // Handler for merging all duplicate rows into their primary rows at once
+  const handleMergeAllDuplicates = useCallback(() => {
+    if (duplicatesInfo.duplicatesList.length === 0) return;
+
+    const records = activeRecords;
+    const primaryToDups = new Map<number, number[]>();
+    for (const { dupIndex, primaryIndex } of duplicatesInfo.duplicatesList) {
+      if (!primaryToDups.has(primaryIndex)) {
+        primaryToDups.set(primaryIndex, []);
+      }
+      primaryToDups.get(primaryIndex)!.push(dupIndex);
+    }
+
+    const exceedingNames: string[] = [];
+    const validPrimaryToDups = new Map<number, number[]>();
+    const validDupIndicesSet = new Set<number>();
+
+    for (const [primaryIdx, dupIndices] of primaryToDups.entries()) {
+      const primaryRecord = records[primaryIdx];
+      if (!primaryRecord) continue;
+
+      let totalPresent = Number(primaryRecord.present_days) || 0;
+      for (const dupIdx of dupIndices) {
+        totalPresent += Number(records[dupIdx]?.present_days) || 0;
+      }
+
+      if (totalPresent > 31) {
+        exceedingNames.push(
+          `${primaryRecord.employee_name || "Employee"} (${totalPresent} days)`,
+        );
+      } else {
+        validPrimaryToDups.set(primaryIdx, dupIndices);
+        for (const dupIdx of dupIndices) {
+          validDupIndicesSet.add(dupIdx);
+        }
+      }
+    }
+
+    if (exceedingNames.length > 0) {
+      toast({
+        title: "Cannot Merge Some Duplicate Rows",
+        description: `Cannot merge rows where combined present days exceed 31: ${exceedingNames.join(", ")}.`,
+        variant: "destructive",
+      });
+    }
+
+    if (validPrimaryToDups.size === 0) {
+      return;
+    }
+
+    pushToHistory(sheetsData);
+
+    setSheetsData((prevSheets) => {
+      const updated = [...prevSheets];
+      const sheet = { ...updated[activeSheetIndex] };
+      const currentRecords = [...sheet.records];
+
+      for (const [primaryIdx, dupIndices] of validPrimaryToDups.entries()) {
+        let merged = currentRecords[primaryIdx];
+        for (const dupIdx of dupIndices) {
+          if (currentRecords[dupIdx]) {
+            merged = mergeTwoRecords(
+              merged,
+              currentRecords[dupIdx],
+              activeFieldConfigs,
+            );
+          }
+        }
+        currentRecords[primaryIdx] = merged;
+      }
+
+      sheet.records = currentRecords.filter(
+        (_, idx) => !validDupIndicesSet.has(idx),
+      );
+      updated[activeSheetIndex] = sheet;
+      return updated;
+    });
+  }, [
+    duplicatesInfo.duplicatesList,
+    activeRecords,
+    pushToHistory,
+    sheetsData,
+    activeSheetIndex,
+    activeFieldConfigs,
+    toast,
+  ]);
+
+  // Memoized table column definitions with mergeDuplicate callback
+  const tableColumns = useMemo(
+    () => ImportedDataColumns(activeFieldConfigs, handleMergeDuplicate),
+    [activeFieldConfigs, handleMergeDuplicate],
+  );
+
   // Sheet-by-sheet import handler
   const handleFinalImport = async () => {
     if (activeSheet.isImported && activeSheet.records.length === 0) {
@@ -1944,12 +2278,25 @@ export function SalaryPayrollImportData({
               </Button>
             ) : (
               <div className="flex items-center gap-2.5">
+                {duplicatesInfo.duplicatesList.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleMergeAllDuplicates}
+                    className="gap-2 font-semibold border-amber-500/60 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500 shadow-xs"
+                    title="Merge all duplicate employee rows in this sheet into their primary rows"
+                  >
+                    <Icon name="table" size="sm" className="text-amber-500" />
+                    Merge Duplicates ({duplicatesInfo.duplicatesList.length})
+                  </Button>
+                )}
+
                 {unmatchedEmployees.length > 0 && (
                   <Button
                     type="button"
                     variant="outline"
                     onClick={() => setShowUnmatchedView(true)}
-                    className="gap-2 font-semibold border-amber-500/60 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500 shadow-xs animate-pulse"
+                    className="gap-2 font-semibold border-amber-500/60 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 hover:border-amber-500 shadow-xs"
                   >
                     <Icon
                       name="employee"
@@ -1997,7 +2344,7 @@ export function SalaryPayrollImportData({
       {/* Spreadsheet Data Grid */}
       <ImportedDataTable
         data={tableData}
-        columns={ImportedDataColumns(activeFieldConfigs)}
+        columns={tableColumns}
         fieldConfigs={activeFieldConfigs}
         conflictingIndex={conflictingIndices}
         canUndo={undoStack.length > 0}

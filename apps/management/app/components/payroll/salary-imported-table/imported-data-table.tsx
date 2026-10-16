@@ -720,6 +720,9 @@ export function ImportedDataTable<TData, TValue>({
                 const isRowDisabled = isConflicting || hasError;
                 const hasExistingSalary = (row.original as any)
                   ?.has_existing_salary_entry;
+                const isDuplicateRow = Boolean(
+                  (row.original as any)?.is_duplicate,
+                );
 
                 return (
                   <TableRow
@@ -732,6 +735,9 @@ export function ImportedDataTable<TData, TValue>({
                       !isRowDisabled &&
                         hasExistingSalary &&
                         "bg-red-500/10 hover:bg-red-500/15 dark:bg-red-950/20 dark:hover:bg-red-950/30",
+                      !isRowDisabled &&
+                        isDuplicateRow &&
+                        "bg-amber-500/10 hover:bg-amber-500/20 dark:bg-amber-950/25 dark:hover:bg-amber-950/35 border-l-4 border-l-amber-500",
                     )}
                   >
                     {row.getVisibleCells().map((cell) => {
